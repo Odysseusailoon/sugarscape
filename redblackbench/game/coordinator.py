@@ -163,6 +163,7 @@ class GameCoordinator:
         round_num = self.state.current_round
         multiplier = self.config.get_multiplier(round_num)
         
+        print(f"\n[Round {round_num}] Starting round with multiplier {multiplier}x")
         if self.logger:
             await self.logger.log_round_start(round_num, multiplier)
         
@@ -193,6 +194,15 @@ class GameCoordinator:
         
         if self.trajectory_collector:
             self.trajectory_collector.record_round_end(result, self.state)
+        print(
+            f"[Round {result.round_num}] Choices: Team_A={result.team_a_choice}, Team_B={result.team_b_choice}"
+        )
+        print(
+            f"[Round {result.round_num}] Scores: Team_A={result.team_a_score:+d}, Team_B={result.team_b_score:+d} (multiplier {result.multiplier}x)"
+        )
+        print(
+            f"[Totals] Team_A={self.state.team_a_total}, Team_B={self.state.team_b_total}, Combined={self.state.total_score} / {self.state.max_possible_score}"
+        )
         
         # Advance to next round or end game
         if self.state.current_round >= self.config.num_rounds:
@@ -237,13 +247,22 @@ class GameCoordinator:
         
         # Record deliberation start
         self.trajectory_collector.record_deliberation_start(round_num, team, team_identifier)
-        
+        print(f"[Team {team_identifier}] Deliberation start")
         initial_pairs = await team.deliberation._gather_initial_opinions(round_context, team_identifier)
+        # Verbose: show speaking order
+        for idx, (agent, opinion) in enumerate(initial_pairs, 1):
+            preview = (opinion.reasoning or "").replace("\n", " ")
+            if len(preview) > 80:
+                preview = preview[:80] + "..."
+            print(f"  [Order {idx}] {agent.agent_id} spoke: {preview}")
         self.trajectory_collector.record_initial_opinions(round_num, team, team_identifier, initial_pairs, self.state)
         
         # Phase 2: Final votes
         initial_opinions = [resp for _, resp in initial_pairs]
         final_votes = await team.deliberation._gather_final_votes(round_context, team_identifier, initial_opinions)
+        from collections import Counter
+        counts = Counter(v.choice for v in final_votes)
+        print(f"  [Votes] {team.name}: BLACK={counts.get(Choice.BLACK,0)}, RED={counts.get(Choice.RED,0)}")
         
         # Determine result
         final_choice, vote_counts, was_unanimous = team.deliberation._determine_majority(final_votes)
@@ -258,6 +277,7 @@ class GameCoordinator:
             was_unanimous=was_unanimous,
         )
         team.deliberation_history.append(result)
+        print(f"  [Team {team_identifier}] Final choice: {final_choice}")
         
         # Record final votes
         self.trajectory_collector.record_final_votes(

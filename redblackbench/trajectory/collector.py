@@ -220,6 +220,7 @@ class TrajectoryCollector:
                 actor=agent.agent_id,
                 choice=str(opinion.choice),
                 reasoning=opinion.reasoning,
+                private_thought=opinion.private_thought,
                 round_num=round_num,
                 phase="opinion_turn",
             ))
@@ -267,6 +268,7 @@ class TrajectoryCollector:
                 actor=agent.agent_id,
                 choice=str(vote.choice),
                 reasoning=vote.reasoning,
+                private_thought=vote.private_thought,
                 round_num=round_num,
                 phase="final_vote",
             ))

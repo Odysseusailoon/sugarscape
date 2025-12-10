@@ -42,6 +42,8 @@ def create_provider(provider_config: dict):
     model = provider_config.get("model")
     temperature = provider_config.get("temperature", 0.7)
     api_key = provider_config.get("api_key")
+    # Enable reasoning capture for OpenRouter by default
+    include_reasoning = provider_config.get("include_reasoning", True)
     
     if provider_type == "openai":
         from redblackbench.providers.openai_provider import OpenAIProvider
@@ -56,6 +58,14 @@ def create_provider(provider_config: dict):
             model=model or "claude-3-opus-20240229",
             temperature=temperature,
             api_key=api_key,
+        )
+    elif provider_type == "openrouter":
+        from redblackbench.providers.openrouter_provider import OpenRouterProvider
+        return OpenRouterProvider(
+            model=model,
+            temperature=temperature,
+            api_key=api_key,
+            include_reasoning=include_reasoning,
         )
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")
@@ -255,7 +265,42 @@ async def analyze_trajectory(trajectory_path: str) -> None:
         print(f"  Team B Score: {fo.team_b_score}")
         print(f"  Total Score: {fo.total_score} / {fo.max_possible_score}")
         print(f"  Efficiency: {fo.efficiency:.1%}")
-        print(f"  Cooperation Rate: {fo.cooperation_rate:.1%}")
+    print(f"  Cooperation Rate: {fo.cooperation_rate:.1%}")
+
+
+async def provider_check(provider: str, model: str, api_key: Optional[str], max_tokens: int = 64) -> None:
+    """Check provider connectivity and attempt minimal completion."""
+    if provider == "openrouter":
+        from redblackbench.providers.openrouter_provider import OpenRouterProvider
+        # Enable reasoning for check to verify it works
+        prov = OpenRouterProvider(model=model, api_key=api_key, temperature=0.0, max_tokens=max_tokens, include_reasoning=True)
+        # List a few models
+        try:
+            models = await prov._client.models.list()
+            print(f"Models available (first 5): {[m.id for m in models.data[:5]]}")
+        except Exception as e:
+            print(f"Model listing failed: {e}")
+        # Retrieve target model
+        try:
+            m = await prov._client.models.retrieve(model)
+            print(f"Model retrieve OK: {m.id}")
+        except Exception as e:
+            print(f"Model retrieve failed for '{model}': {e}")
+        try:
+            resp = await prov.generate(system_prompt="ping", messages=[{"role":"user","content":"ping"}])
+            print(f"Chat completion succeeded!")
+            # Check for hidden thinking delimiters
+            if "__THINKING_START__" in resp:
+                print("✓ Reasoning/Thinking tokens captured successfully (hidden from final output)")
+                print(f"Raw output preview: {resp[:100]}...")
+            else:
+                print("⚠ No reasoning tokens found in response (Model might not support it or didn't think)")
+                print(f"Response preview: {resp[:80]}...")
+        except Exception as e:
+            print(f"Chat completion failed: {e}")
+            print("If error code is 402, you need OpenRouter credits: https://openrouter.ai/settings/credits")
+    else:
+        print(f"Unsupported provider: {provider}")
 
 
 def main():
@@ -325,6 +370,12 @@ Examples:
         required=True,
         help="Path to trajectory JSON file"
     )
+    # Provider check command
+    pc_parser = subparsers.add_parser("provider-check", help="Check provider connectivity")
+    pc_parser.add_argument("--provider", required=True, type=str, help="Provider type (e.g., openrouter)")
+    pc_parser.add_argument("--model", required=True, type=str, help="Model ID to test")
+    pc_parser.add_argument("--api-key", required=False, type=str, help="API key override")
+    pc_parser.add_argument("--max-tokens", required=False, type=int, default=64, help="Max output tokens for the check (default: 64)")
     
     args = parser.parse_args()
     
@@ -359,6 +410,8 @@ Examples:
     
     elif args.command == "trajectory":
         asyncio.run(analyze_trajectory(args.file))
+    elif args.command == "provider-check":
+        asyncio.run(provider_check(args.provider, args.model, args.api_key, args.max_tokens))
         
     else:
         parser.print_help()

@@ -16,11 +16,13 @@ class AgentResponse:
         reasoning: The agent's reasoning for their choice
         confidence: Optional confidence score (0-1)
         raw_response: The raw LLM response text
+        private_thought: The agent's hidden thinking process (not shared with others)
     """
     choice: Choice
     reasoning: str
     confidence: Optional[float] = None
     raw_response: Optional[str] = None
+    private_thought: Optional[str] = None
     
     def to_dict(self) -> dict:
         """Convert to dictionary for logging."""
@@ -29,6 +31,7 @@ class AgentResponse:
             "reasoning": self.reasoning,
             "confidence": self.confidence,
             "raw_response": self.raw_response,
+            "private_thought": self.private_thought,
         }
 
 

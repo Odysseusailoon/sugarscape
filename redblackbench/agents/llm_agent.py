@@ -1,7 +1,7 @@
 """LLM-powered agent implementation for RedBlackBench."""
 
 import re
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from redblackbench.agents.base import BaseAgent, AgentResponse
 from redblackbench.agents.prompts import (
@@ -46,6 +46,27 @@ class LLMAgent(BaseAgent):
             agent_id, team_name, self.prompt_template
         )
     
+    def _extract_private_thought(self, response: str) -> Tuple[str, Optional[str]]:
+        """Extract hidden thinking content wrapped in delimiters.
+        
+        Args:
+            response: Raw LLM response text
+            
+        Returns:
+            Tuple of (cleaned_response, private_thought)
+        """
+        # Look for the thinking block with our specific delimiters
+        pattern = r"__THINKING_START__\n(.*?)\n__THINKING_END__\n\n?"
+        match = re.search(pattern, response, re.DOTALL)
+        
+        if match:
+            private_thought = match.group(1).strip()
+            # Remove the thinking block from the public response
+            cleaned_response = re.sub(pattern, "", response, flags=re.DOTALL).strip()
+            return cleaned_response, private_thought
+            
+        return response, None
+
     def _parse_choice(self, response: str) -> Choice:
         """Parse the choice from an LLM response.
         
@@ -144,30 +165,38 @@ class LLMAgent(BaseAgent):
         })
         
         # Get LLM response
-        response_text = await self.provider.generate(
+        raw_text = await self.provider.generate(
             system_prompt=self._system_prompt,
             messages=self.conversation_history,
         )
         
-        # Add response to history
+        # Extract private thought if present
+        public_text, private_thought = self._extract_private_thought(raw_text)
+        
+        # Add response to history (we store the public version to avoid confusing the model later? 
+        # Actually, standard practice is to store what the model generated. 
+        # But here we want to HIDE the thinking from teammates. 
+        # The history is self-history. The model should know its own thoughts.
+        # So we store raw_text in history.)
         self.conversation_history.append({
             "role": "assistant", 
-            "content": response_text,
+            "content": raw_text,
         })
         
-        # Parse response
+        # Parse response from PUBLIC text
         try:
-            choice = self._parse_choice(response_text)
+            choice = self._parse_choice(public_text)
         except ValueError:
             # Default to BLACK if parsing fails (cooperative default)
             choice = Choice.BLACK
         
-        reasoning = self._parse_reasoning(response_text)
+        reasoning = self._parse_reasoning(public_text)
         
         return AgentResponse(
             choice=choice,
             reasoning=reasoning,
-            raw_response=response_text,
+            raw_response=raw_text, # Keep full response including thinking for logs
+            private_thought=private_thought,
         )
 
     async def get_willingness_to_speak(
@@ -181,15 +210,18 @@ class LLMAgent(BaseAgent):
             "role": "user",
             "content": user_prompt,
         })
-        response_text = await self.provider.generate(
+        raw_text = await self.provider.generate(
             system_prompt=self._system_prompt,
             messages=self.conversation_history,
         )
+        # We don't expect thinking here usually, but good to handle it
+        public_text, _ = self._extract_private_thought(raw_text)
+        
         self.conversation_history.append({
             "role": "assistant",
-            "content": response_text,
+            "content": raw_text,
         })
-        return self._parse_willingness(response_text)
+        return self._parse_willingness(public_text)
     
     async def get_final_vote(
         self,
@@ -218,28 +250,31 @@ class LLMAgent(BaseAgent):
         })
         
         # Get LLM response
-        response_text = await self.provider.generate(
+        raw_text = await self.provider.generate(
             system_prompt=self._system_prompt,
             messages=self.conversation_history,
         )
         
+        public_text, private_thought = self._extract_private_thought(raw_text)
+        
         # Add response to history
         self.conversation_history.append({
             "role": "assistant",
-            "content": response_text,
+            "content": raw_text,
         })
         
         # Parse response
         try:
-            choice = self._parse_choice(response_text)
+            choice = self._parse_choice(public_text)
         except ValueError:
             # Default to BLACK if parsing fails
             choice = Choice.BLACK
         
-        reasoning = self._parse_reasoning(response_text)
+        reasoning = self._parse_reasoning(public_text)
         
         return AgentResponse(
             choice=choice,
             reasoning=reasoning,
-            raw_response=response_text,
+            raw_response=raw_text,
+            private_thought=private_thought,
         )

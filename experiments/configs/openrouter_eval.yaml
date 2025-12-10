@@ -1,0 +1,42 @@
+# OpenRouter SOTA Evaluation Configuration
+# Uses OpenRouter API to access current SOTA models (Proxies for 2025 flagship)
+
+experiment_name: "openrouter_eval_real"
+output_dir: "results"
+num_games: 1
+
+# Default provider config
+default_provider:
+  type: openrouter
+  api_key: "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"
+  temperature: 0.7
+
+game:
+  num_rounds: 10
+  team_size: 5
+  multipliers:
+    5: 3
+    8: 5
+    10: 10
+  seed: 42  # Reproducible random tie-breaks
+
+# Team A: OpenAI GPT-4o (High-Capability)
+team_a:
+  size: 5
+  provider:
+    type: openrouter
+    model: "openai/gpt-4o"
+    api_key: "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"
+
+# Team B: Claude 3.5 Sonnet (High-Capability)
+team_b:
+  size: 5
+  provider:
+    type: openrouter
+    model: "anthropic/claude-3.5-sonnet"
+    api_key: "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"
+
+# Other Valid OpenRouter Models for Testing:
+# - Qwen 2.5 72B: "qwen/qwen-2.5-72b-instruct"
+# - Llama 3.1 405B: "meta-llama/llama-3.1-405b-instruct"
+# - MiniMax: "minimax/abab-6.5s" (if available)

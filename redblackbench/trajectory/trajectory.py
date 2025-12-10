@@ -94,6 +94,7 @@ class ActionRecord:
         round_num: Which round this action was for
         phase: 'initial_opinion' or 'final_vote' for individual votes
         timestamp: When this action occurred
+        private_thought: Hidden thinking process (if any)
     """
     action_type: str  # 'individual_vote' or 'team_choice'
     actor: str  # agent_id or team_name
@@ -102,6 +103,7 @@ class ActionRecord:
     round_num: int = 0
     phase: Optional[str] = None  # 'initial_opinion' or 'final_vote'
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    private_thought: Optional[str] = None
     
     def to_dict(self) -> dict:
         return {
@@ -112,6 +114,7 @@ class ActionRecord:
             "round_num": self.round_num,
             "phase": self.phase,
             "timestamp": self.timestamp,
+            "private_thought": self.private_thought,
         }
 
 
@@ -486,6 +489,7 @@ class GameTrajectory:
                     round_num=a_data.get("round_num", 0),
                     phase=a_data.get("phase"),
                     timestamp=a_data.get("timestamp", ""),
+                    private_thought=a_data.get("private_thought"),
                 ))
             
             # Reconstruct outcome if present
@@ -523,4 +527,3 @@ class GameTrajectory:
             )
         
         return trajectory
-
