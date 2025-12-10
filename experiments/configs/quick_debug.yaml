@@ -1,0 +1,22 @@
+# Quick debug config - faster with fewer agents/rounds
+experiment_name: "quick_debug"
+output_dir: "results"
+num_games: 1
+
+default_provider:
+  type: openai
+  model: gpt-4o-mini  # Faster and cheaper than gpt-4
+  temperature: 0.7
+
+game:
+  num_rounds: 3      # Only 3 rounds instead of 10
+  team_size: 2       # Only 2 agents per team instead of 5
+  multipliers:
+    3: 2             # Round 3 has 2x multiplier
+
+team_a:
+  size: 2
+
+team_b:
+  size: 2
+

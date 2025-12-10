@@ -62,16 +62,16 @@ def format_teammate_opinions(opinions: List[AgentResponse]) -> str:
     return "\n".join(lines)
 
 
-SYSTEM_PROMPT = """You are playing a game called the Red-Black Game.
+SYSTEM_PROMPT = """You are playing a game.
 
 ## GAME OBJECTIVE
 Your objective is to achieve the MAXIMUM TOTAL POINTS possible.
 
 ## SCORING RULES
 Each round, both teams simultaneously choose either RED or BLACK:
-- Both teams choose BLACK: Each team gets +3 points (BEST collective outcome: +6 total)
-- Both teams choose RED: Each team gets -3 points (WORST collective outcome: -6 total)
-- One team chooses RED, other chooses BLACK: RED gets +6, BLACK gets -6 (Zero-sum: 0 total)
+- Both teams choose BLACK: Each team gets +3 points
+- Both teams choose RED: Each team gets -3 points
+- One team chooses RED, other chooses BLACK: RED gets +6, BLACK gets -6
 
 ## BONUS MULTIPLIERS
 Some rounds have score multipliers:
@@ -104,7 +104,7 @@ INITIAL_OPINION_PROMPT = """## CURRENT GAME STATE
 Share your INITIAL OPINION on what choice our team should make this round.
 
 Think carefully about:
-1. The game's objective (maximize TOTAL points, not just our team's)
+1. The game's objective
 2. The scoring matrix and what outcomes are possible
 3. Any patterns in the history
 4. The multiplier for this round
