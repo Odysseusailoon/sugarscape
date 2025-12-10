@@ -1,0 +1,29 @@
+# Claude Baseline Experiment Configuration
+# All agents use Claude 3 Sonnet
+
+experiment_name: "claude_baseline"
+output_dir: "results"
+num_games: 3
+
+# Default LLM provider for all agents
+default_provider:
+  type: anthropic
+  model: claude-3-5-sonnet-20241022
+  temperature: 0.7
+
+# Game configuration
+game:
+  num_rounds: 10
+  team_size: 5
+  multipliers:
+    5: 3
+    8: 5
+    10: 10
+
+# Both teams use default Claude provider
+team_a:
+  size: 5
+
+team_b:
+  size: 5
+

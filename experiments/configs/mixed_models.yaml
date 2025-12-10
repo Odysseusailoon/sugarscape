@@ -1,0 +1,32 @@
+# Mixed Models Experiment Configuration
+# Pits GPT-4 agents against Claude agents
+
+experiment_name: "gpt4_vs_claude"
+output_dir: "results"
+num_games: 5
+
+# Game configuration
+game:
+  num_rounds: 10
+  team_size: 5
+  multipliers:
+    5: 3
+    8: 5
+    10: 10
+
+# Team A: GPT-4 agents
+team_a:
+  size: 5
+  provider:
+    type: openai
+    model: gpt-4
+    temperature: 0.7
+
+# Team B: Claude agents
+team_b:
+  size: 5
+  provider:
+    type: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.7
+
