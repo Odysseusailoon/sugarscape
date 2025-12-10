@@ -198,7 +198,7 @@ class TrajectoryCollector:
         round_num: int,
         team: "Team",
         team_identifier: str,
-        opinions: List["AgentResponse"],
+        opinions_with_agents: List[tuple["BaseAgent", "AgentResponse"]],
         game_state: "GameState",
     ) -> None:
         """Record initial opinions from a team's agents.
@@ -213,16 +213,15 @@ class TrajectoryCollector:
         if not self.trajectory:
             return
         
-        # Create action records for each opinion
         actions = []
-        for i, (agent, opinion) in enumerate(zip(team.agents, opinions)):
+        for i, (agent, opinion) in enumerate(opinions_with_agents):
             actions.append(ActionRecord(
-                action_type="individual_vote",
+                action_type="individual_opinion",
                 actor=agent.agent_id,
                 choice=str(opinion.choice),
                 reasoning=opinion.reasoning,
                 round_num=round_num,
-                phase="initial_opinion",
+                phase="opinion_turn",
             ))
         
         # Update team snapshot
@@ -236,7 +235,7 @@ class TrajectoryCollector:
             timestep_type=TimestepType.INITIAL_OPINIONS,
             round_num=round_num,
             actions=actions,
-            metadata={"team": team.name, "team_identifier": team_identifier},
+            metadata={"team": team.name, "team_identifier": team_identifier, "turns": len(actions)},
         )
     
     def record_final_votes(
@@ -393,4 +392,3 @@ class TrajectoryCollector:
             The GameTrajectory, or None if not initialized
         """
         return self.trajectory
-

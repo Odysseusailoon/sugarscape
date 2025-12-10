@@ -112,6 +112,21 @@ class TestLLMAgent:
         
         # Should default to BLACK (cooperative)
         assert response.choice == Choice.BLACK
+
+    @pytest.mark.asyncio
+    async def test_willingness_parsing(self):
+        provider = MockProvider([
+            "WILLINGNESS: 3",
+        ])
+        agent = LLMAgent("agent_1", "Team A", provider)
+        w = await agent.get_willingness_to_speak(
+            {"current_round": 1, "total_rounds": 10, "multiplier": 1,
+             "team_a_score": 0, "team_b_score": 0, "total_score": 0,
+             "max_possible": 150, "history": []},
+            "A",
+            []
+        )
+        assert w == 3
     
     def test_reset(self):
         """Test agent reset clears history."""
@@ -170,6 +185,34 @@ class TestDeliberation:
         
         assert result.was_unanimous is True
 
+    @pytest.mark.asyncio
+    async def test_willingness_ordering(self):
+        class WillingAgent(BaseAgent):
+            def __init__(self, agent_id, team_name, will):
+                super().__init__(agent_id, team_name)
+                self._will = will
+            async def get_initial_opinion(self, round_context, team_identifier):
+                return AgentResponse(Choice.BLACK, f"Agent {self.agent_id} speaks", raw_response="RECOMMENDATION: BLACK")
+            async def get_final_vote(self, round_context, team_identifier, teammate_opinions):
+                return AgentResponse(Choice.BLACK, "Final", raw_response="VOTE: BLACK")
+            async def get_willingness_to_speak(self, round_context, team_identifier, seen_messages):
+                return self._will
+
+        agents = [
+            WillingAgent("a1", "Team A", 1),
+            WillingAgent("a2", "Team A", 3),
+            WillingAgent("a3", "Team A", 2),
+        ]
+        deliberation = Deliberation(agents)
+        res = await deliberation._gather_initial_opinions(
+            {"current_round": 1, "total_rounds": 10, "multiplier": 1,
+             "team_a_score": 0, "team_b_score": 0, "total_score": 0,
+             "max_possible": 150, "history": []},
+            "A"
+        )
+        order_ids = [a.agent_id for a, _ in res]
+        assert order_ids[0] == "a2"
+
 
 class TestTeam:
     """Tests for the Team class."""
@@ -222,4 +265,3 @@ class TestTeam:
         assert team.deliberation_history == []
         for agent in agents:
             agent.reset.assert_called_once()
-

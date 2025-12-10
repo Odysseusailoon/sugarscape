@@ -92,3 +92,21 @@ class BaseAgent(ABC):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(id={self.agent_id}, team={self.team_name})"
 
+    @abstractmethod
+    async def get_willingness_to_speak(
+        self,
+        round_context: dict,
+        team_identifier: str,
+        seen_messages: list,
+    ) -> int:
+        """Return willingness to speak (0-3) given current context.
+        
+        Args:
+            round_context: Current game state context
+            team_identifier: 'A' or 'B'
+            seen_messages: Ordered list of prior team channel messages
+        
+        Returns:
+            Integer in [0, 3] indicating willingness level
+        """
+        pass

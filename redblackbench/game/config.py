@@ -31,6 +31,7 @@ class GameConfig:
     both_red_score: int = -3       # Both defect: -3 each
     red_wins_score: int = 6        # Red gets +6 when opponent plays Black
     black_loses_score: int = -6    # Black gets -6 when opponent plays Red
+    seed: int | None = None        # Optional randomness seed for reproducibility
     
     def get_multiplier(self, round_num: int) -> int:
         """Get the score multiplier for a given round.
@@ -72,4 +73,3 @@ class GameConfig:
 
 # Default configuration matching the classic Red-Black game
 DEFAULT_CONFIG = GameConfig()
-

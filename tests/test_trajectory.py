@@ -264,26 +264,28 @@ class TestTrajectoryCollector:
             team_a_total = 0
             team_b_total = 0
             cooperation_rate = 0.0
+            efficiency = 0.0
             total_score = 0
             max_possible_score = 12
+            history = []
         
         game_state = MockGameState()
         
         # Record deliberation for team A
         collector.record_deliberation_start(1, team_a, "A")
         
-        mock_opinions = [
-            AgentResponse(Choice.BLACK, "Cooperate!", raw_response="RECOMMENDATION: BLACK"),
-            AgentResponse(Choice.BLACK, "Trust!", raw_response="RECOMMENDATION: BLACK"),
+        mock_opinion_pairs = [
+            (team_a.agents[0], AgentResponse(Choice.BLACK, "Cooperate!", raw_response="RECOMMENDATION: BLACK")),
+            (team_a.agents[1], AgentResponse(Choice.BLACK, "Trust!", raw_response="RECOMMENDATION: BLACK")),
         ]
-        collector.record_initial_opinions(1, team_a, "A", mock_opinions, game_state)
+        collector.record_initial_opinions(1, team_a, "A", mock_opinion_pairs, game_state)
         
         # Create mock deliberation result
         from redblackbench.teams.deliberation import DeliberationResult
         delib_result = DeliberationResult(
             final_choice=Choice.BLACK,
-            initial_opinions=mock_opinions,
-            final_votes=mock_opinions,
+            initial_opinions=[resp for _, resp in mock_opinion_pairs],
+            final_votes=[resp for _, resp in mock_opinion_pairs],
             vote_counts={Choice.BLACK: 2},
             was_unanimous=True,
         )
@@ -320,4 +322,3 @@ class TestTrajectoryCollector:
         outcomes = trajectory.get_outcomes()
         round_outcomes = [o for o in outcomes if o.outcome_type == "round"]
         assert len(round_outcomes) == 1
-

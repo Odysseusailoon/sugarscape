@@ -238,20 +238,12 @@ class GameCoordinator:
         # Record deliberation start
         self.trajectory_collector.record_deliberation_start(round_num, team, team_identifier)
         
-        # Phase 1: Initial opinions
-        initial_opinions = await team.deliberation._gather_initial_opinions(
-            round_context, team_identifier
-        )
-        
-        # Record initial opinions
-        self.trajectory_collector.record_initial_opinions(
-            round_num, team, team_identifier, initial_opinions, self.state
-        )
+        initial_pairs = await team.deliberation._gather_initial_opinions(round_context, team_identifier)
+        self.trajectory_collector.record_initial_opinions(round_num, team, team_identifier, initial_pairs, self.state)
         
         # Phase 2: Final votes
-        final_votes = await team.deliberation._gather_final_votes(
-            round_context, team_identifier, initial_opinions
-        )
+        initial_opinions = [resp for _, resp in initial_pairs]
+        final_votes = await team.deliberation._gather_final_votes(round_context, team_identifier, initial_opinions)
         
         # Determine result
         final_choice, vote_counts, was_unanimous = team.deliberation._determine_majority(final_votes)
@@ -288,6 +280,9 @@ class GameCoordinator:
                 self.config, self.team_a, self.team_b
             )
         
+        import random
+        if self.config.seed is not None:
+            random.seed(self.config.seed)
         while not self.state.is_complete:
             await self.play_round()
         

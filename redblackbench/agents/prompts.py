@@ -230,3 +230,52 @@ def build_final_vote_prompt(
         history=format_history(round_context["history"]),
     )
 
+
+def format_team_channel(messages: List[dict]) -> str:
+    """Format team channel messages for willingness prompt."""
+    if not messages:
+        return "No teammate has spoken yet."
+    lines = []
+    for i, m in enumerate(messages, 1):
+        lines.append(f"Turn {i}: {m.get('agent_id', 'unknown')} said: {m.get('message', '').strip()}")
+    return "\n".join(lines)
+
+
+WILLINGNESS_PROMPT = """## CURRENT GAME STATE
+- Round: {current_round} of {total_rounds}
+- This round's multiplier: {multiplier}x
+- Your team (Team {team_id}) score: {own_score}
+- Other team score: {opponent_score}
+- Combined total: {total_score}
+
+## TEAM CHANNEL (LATEST MESSAGES)
+{team_channel}
+
+## YOUR WILLINGNESS TO SPEAK
+Decide how strongly you want to speak next (0-3).
+
+Respond strictly in this format:
+
+WILLINGNESS: [0-3]
+"""
+
+
+def build_willingness_prompt(
+    round_context: dict,
+    team_identifier: str,
+    seen_messages: List[dict],
+    template: Optional[PromptTemplate] = None,
+) -> str:
+    prompts = template or DEFAULT_PROMPTS
+    own_score = round_context["team_a_score"] if team_identifier == "A" else round_context["team_b_score"]
+    opponent_score = round_context["team_b_score"] if team_identifier == "A" else round_context["team_a_score"]
+    return WILLINGNESS_PROMPT.format(
+        current_round=round_context["current_round"],
+        total_rounds=round_context["total_rounds"],
+        multiplier=round_context["multiplier"],
+        team_id=team_identifier,
+        own_score=own_score,
+        opponent_score=opponent_score,
+        total_score=round_context["total_score"],
+        team_channel=format_team_channel(seen_messages),
+    )

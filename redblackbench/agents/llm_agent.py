@@ -8,6 +8,7 @@ from redblackbench.agents.prompts import (
     build_system_prompt,
     build_initial_opinion_prompt,
     build_final_vote_prompt,
+    build_willingness_prompt,
     PromptTemplate,
     DEFAULT_PROMPTS,
 )
@@ -107,6 +108,16 @@ class LLMAgent(BaseAgent):
                     return remaining[1].strip()
         
         return response.strip()
+
+    def _parse_willingness(self, response: str) -> int:
+        response_upper = response.upper()
+        m = re.search(r"WILLINGNESS:\s*([0-3])", response_upper)
+        if m:
+            return max(0, min(3, int(m.group(1))))
+        digits = re.findall(r"\b([0-3])\b", response_upper)
+        if digits:
+            return max(0, min(3, int(digits[-1])))
+        return 1
     
     async def get_initial_opinion(
         self,
@@ -158,6 +169,27 @@ class LLMAgent(BaseAgent):
             reasoning=reasoning,
             raw_response=response_text,
         )
+
+    async def get_willingness_to_speak(
+        self,
+        round_context: dict,
+        team_identifier: str,
+        seen_messages: list,
+    ) -> int:
+        user_prompt = build_willingness_prompt(round_context, team_identifier, seen_messages, self.prompt_template)
+        self.conversation_history.append({
+            "role": "user",
+            "content": user_prompt,
+        })
+        response_text = await self.provider.generate(
+            system_prompt=self._system_prompt,
+            messages=self.conversation_history,
+        )
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": response_text,
+        })
+        return self._parse_willingness(response_text)
     
     async def get_final_vote(
         self,
@@ -211,4 +243,3 @@ class LLMAgent(BaseAgent):
             reasoning=reasoning,
             raw_response=response_text,
         )
-

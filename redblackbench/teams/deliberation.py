@@ -62,21 +62,29 @@ class Deliberation:
         self,
         round_context: dict,
         team_identifier: str,
-    ) -> List[AgentResponse]:
-        """Gather initial opinions from all agents concurrently.
-        
-        Args:
-            round_context: Current game state context
-            team_identifier: 'A' or 'B' indicating which team
-            
-        Returns:
-            List of initial opinions from all agents
-        """
-        tasks = [
-            agent.get_initial_opinion(round_context, team_identifier)
-            for agent in self.agents
-        ]
-        return await asyncio.gather(*tasks)
+    ) -> List[tuple["BaseAgent", AgentResponse]]:
+        spoken = set()
+        team_channel: List[dict] = []
+        ordered_pairs: List[tuple["BaseAgent", AgentResponse]] = []
+        while len(spoken) < len(self.agents):
+            pending_agents = [a for a in self.agents if a not in spoken]
+            willingness_tasks = [
+                a.get_willingness_to_speak(round_context, team_identifier, team_channel)
+                for a in pending_agents
+            ]
+            willingness_values = await asyncio.gather(*willingness_tasks)
+            max_w = max(willingness_values) if willingness_values else 0
+            candidates = [a for a, w in zip(pending_agents, willingness_values) if w == max_w]
+            import random
+            chosen = random.choice(candidates)
+            opinion = await chosen.get_initial_opinion(round_context, team_identifier)
+            ordered_pairs.append((chosen, opinion))
+            team_channel.append({
+                "agent_id": getattr(chosen, "agent_id", "unknown"),
+                "message": opinion.reasoning,
+            })
+            spoken.add(chosen)
+        return ordered_pairs
     
     async def _gather_final_votes(
         self,
@@ -145,14 +153,11 @@ class Deliberation:
             DeliberationResult with the team's final choice and all votes
         """
         # Phase 1: Gather initial opinions
-        initial_opinions = await self._gather_initial_opinions(
-            round_context, team_identifier
-        )
+        initial_pairs = await self._gather_initial_opinions(round_context, team_identifier)
+        initial_opinions = [resp for _, resp in initial_pairs]
         
         # Phase 2: Share opinions and gather final votes
-        final_votes = await self._gather_final_votes(
-            round_context, team_identifier, initial_opinions
-        )
+        final_votes = await self._gather_final_votes(round_context, team_identifier, initial_opinions)
         
         # Determine majority
         final_choice, vote_counts, was_unanimous = self._determine_majority(final_votes)
@@ -164,4 +169,3 @@ class Deliberation:
             vote_counts=vote_counts,
             was_unanimous=was_unanimous,
         )
-
