@@ -57,6 +57,7 @@ Set your API keys as environment variables:
 ```bash
 export OPENAI_API_KEY="your-openai-key"
 export ANTHROPIC_API_KEY="your-anthropic-key"
+export OPENROUTER_API_KEY="your-openrouter-key"  # For OpenRouter models
 ```
 
 ## Quick Start
@@ -72,6 +73,18 @@ redblackbench run --quick-test
 
 # Analyze results
 redblackbench analyze --results-dir results/
+```
+
+### Smoke Tests with OpenRouter (SOTA Models)
+
+You can run low-cost smoke tests (1 round, 1 agent) to verify "Thinking" models via OpenRouter:
+
+```bash
+# GPT-5.1 vs Gemini 3 Pro
+redblackbench run --config experiments/configs/openrouter_match_gpt5_vs_gemini.yaml --no-trajectory
+
+# Kimi K2 Thinking vs Qwen 3
+redblackbench run --config experiments/configs/openrouter_match_kimi_vs_qwen.yaml --no-trajectory
 ```
 
 ### Programmatic Usage
@@ -250,4 +263,3 @@ Contributions are welcome! Please see our contributing guidelines for details.
 
 - Game theory concepts from classic social dilemma research
 - Inspired by work on AI alignment and multi-agent cooperation
-
