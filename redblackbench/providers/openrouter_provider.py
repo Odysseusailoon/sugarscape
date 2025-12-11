@@ -73,8 +73,8 @@ class OpenRouterProvider(OpenAIProvider):
         if self.include_reasoning:
             extra_body["include_reasoning"] = True
 
-        # Make API call
-        response = await self._client.chat.completions.create(
+        # Make API call with retry
+        response = await self._call_api_with_retry(
             model=self.config.model,
             messages=api_messages,
             temperature=self.config.temperature,

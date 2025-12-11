@@ -1,6 +1,9 @@
 """OpenAI LLM provider for RedBlackBench."""
 
 import os
+import asyncio
+import logging
+import random
 from typing import List, Optional
 
 from redblackbench.providers.base import BaseLLMProvider, ProviderConfig
@@ -53,6 +56,27 @@ class OpenAIProvider(BaseLLMProvider):
     def provider_name(self) -> str:
         """Name of the provider."""
         return "openai"
+        
+    async def _call_api_with_retry(self, **kwargs):
+        """Make an API call with exponential backoff retry."""
+        import openai
+        max_retries = 5
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                return await self._client.chat.completions.create(**kwargs)
+            except (openai.RateLimitError, openai.APIConnectionError) as e:
+                if attempt == max_retries - 1:
+                    logging.error(f"OpenAI API request failed after {max_retries} attempts: {e}")
+                    raise
+                
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                logging.warning(f"OpenAI API error: {e}. Retrying in {delay:.2f}s...")
+                await asyncio.sleep(delay)
+            except Exception as e:
+                logging.error(f"OpenAI API unexpected error: {e}")
+                raise
     
     async def generate(
         self,
@@ -72,8 +96,8 @@ class OpenAIProvider(BaseLLMProvider):
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages.extend(messages)
         
-        # Make API call
-        response = await self._client.chat.completions.create(
+        # Make API call with retry
+        response = await self._call_api_with_retry(
             model=self.config.model,
             messages=api_messages,
             temperature=self.config.temperature,

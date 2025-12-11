@@ -1,0 +1,20 @@
+experiment_name: wisdom_crowds_gpt-5_thinking_2v2
+output_dir: results/scaling_experiment/gpt-5_thinking/2v2
+num_games: 1
+game:
+  num_rounds: 10
+  team_size: 2
+team_a:
+  size: 2
+  provider:
+    type: openrouter
+    model: openai/gpt-5.1
+    temperature: 1.0
+    include_reasoning: true
+team_b:
+  size: 2
+  provider:
+    type: openrouter
+    model: openai/gpt-5.1
+    temperature: 1.0
+    include_reasoning: true

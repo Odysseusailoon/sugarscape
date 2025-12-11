@@ -1,0 +1,20 @@
+experiment_name: wisdom_crowds_kimi_k2_thinking_2v2
+output_dir: results/scaling_experiment/kimi_k2_thinking/2v2
+num_games: 1
+game:
+  num_rounds: 10
+  team_size: 2
+team_a:
+  size: 2
+  provider:
+    type: openrouter
+    model: moonshotai/kimi-k2-thinking
+    temperature: 1.0
+    include_reasoning: true
+team_b:
+  size: 2
+  provider:
+    type: openrouter
+    model: moonshotai/kimi-k2-thinking
+    temperature: 1.0
+    include_reasoning: true

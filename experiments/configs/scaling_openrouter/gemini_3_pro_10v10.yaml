@@ -1,0 +1,20 @@
+experiment_name: wisdom_crowds_gemini_3_pro_10v10
+output_dir: results/scaling_experiment/gemini_3_pro/10v10
+num_games: 1
+game:
+  num_rounds: 10
+  team_size: 10
+team_a:
+  size: 10
+  provider:
+    type: openrouter
+    model: google/gemini-3-pro-preview
+    temperature: 1.0
+    include_reasoning: true
+team_b:
+  size: 10
+  provider:
+    type: openrouter
+    model: google/gemini-3-pro-preview
+    temperature: 1.0
+    include_reasoning: true

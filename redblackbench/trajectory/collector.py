@@ -46,17 +46,24 @@ class TrajectoryCollector:
         config: "GameConfig",
         team_a: "Team",
         team_b: "Team",
+        existing_trajectory: Optional[GameTrajectory] = None,
     ) -> GameTrajectory:
-        """Initialize trajectory collection for a new game.
+        """Initialize trajectory collection for a new game or resume existing.
         
         Args:
             config: Game configuration
             team_a: Team A
             team_b: Team B
+            existing_trajectory: Optional trajectory to resume from
             
         Returns:
             The initialized GameTrajectory
         """
+        if existing_trajectory:
+            self.trajectory = existing_trajectory
+            print(f"Resuming trajectory {self.trajectory.trajectory_id}")
+            return self.trajectory
+
         self.trajectory = GameTrajectory(
             trajectory_id=self.trajectory_id,
             game_config={

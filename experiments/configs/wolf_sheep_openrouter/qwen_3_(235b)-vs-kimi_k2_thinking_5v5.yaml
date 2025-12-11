@@ -1,0 +1,20 @@
+experiment_name: wolf_sheep_qwen_3_(235b)-vs-kimi_k2_thinking_5v5
+output_dir: results/wolf_sheep_experiment/qwen_3_(235b)-vs-kimi_k2_thinking/5v5
+num_games: 1
+game:
+  num_rounds: 10
+  team_size: 5
+team_a:
+  size: 5
+  provider:
+    type: openrouter
+    model: qwen/qwen3-vl-235b-a22b-thinking
+    temperature: 1.0
+    include_reasoning: true
+team_b:
+  size: 5
+  provider:
+    type: openrouter
+    model: moonshotai/kimi-k2-thinking
+    temperature: 1.0
+    include_reasoning: true

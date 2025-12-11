@@ -447,6 +447,37 @@ class GameTrajectory:
         with open(filepath, 'w') as f:
             json.dump(self.get_full_trajectory(), f, indent=2)
     
+    @staticmethod
+    def _reconstruct_team_snapshot(data: dict) -> TeamSnapshot:
+        agents = []
+        for a_data in data.get("agents", []):
+            history = []
+            for h_data in a_data.get("conversation_history", []):
+                history.append(DialogueExchange(
+                    role=h_data["role"],
+                    content=h_data["content"],
+                    timestamp=h_data.get("timestamp", ""),
+                    exchange_type=h_data.get("exchange_type")
+                ))
+            
+            agents.append(AgentSnapshot(
+                agent_id=a_data["agent_id"],
+                team_name=a_data["team_name"],
+                conversation_history=history,
+                current_opinion=a_data.get("current_opinion"),
+                current_reasoning=a_data.get("current_reasoning"),
+                vote_history=a_data.get("vote_history", [])
+            ))
+            
+        return TeamSnapshot(
+            team_name=data["team_name"],
+            team_identifier=data["team_identifier"],
+            agents=agents,
+            current_score=data.get("current_score", 0),
+            choices_made=data.get("choices_made", []),
+            consensus_history=data.get("consensus_history", [])
+        )
+
     @classmethod
     def load(cls, filepath: str) -> "GameTrajectory":
         """Load a trajectory from a JSON file.
@@ -478,6 +509,12 @@ class GameTrajectory:
                 timestamp=t_data["timestamp"],
                 metadata=t_data.get("metadata", {}),
             )
+            
+            # Reconstruct snapshots
+            if t_data.get("team_a_snapshot"):
+                timestep.team_a_snapshot = cls._reconstruct_team_snapshot(t_data["team_a_snapshot"])
+            if t_data.get("team_b_snapshot"):
+                timestep.team_b_snapshot = cls._reconstruct_team_snapshot(t_data["team_b_snapshot"])
             
             # Reconstruct actions
             for a_data in t_data.get("actions", []):
@@ -525,5 +562,23 @@ class GameTrajectory:
                 total_score=fo.get("total_score", 0),
                 max_possible_score=fo.get("max_possible_score", 0),
             )
+            
+        # Restore internal state snapshots to the latest available
+        last_a = None
+        last_b = None
+        for t in trajectory.timesteps:
+            if t.team_a_snapshot:
+                last_a = t.team_a_snapshot
+            if t.team_b_snapshot:
+                last_b = t.team_b_snapshot
+        
+        if last_a:
+            trajectory._team_a_state = last_a
+        if last_b:
+            trajectory._team_b_state = last_b
+            
+        # Restore _current_timestep_id
+        if trajectory.timesteps:
+            trajectory._current_timestep_id = trajectory.timesteps[-1].timestep_id + 1
         
         return trajectory

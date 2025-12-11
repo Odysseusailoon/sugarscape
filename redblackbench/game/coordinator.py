@@ -286,8 +286,11 @@ class GameCoordinator:
         
         return final_choice
     
-    async def play_game(self) -> GameState:
+    async def play_game(self, resume_from: Optional[str] = None) -> GameState:
         """Play a complete game from start to finish.
+        
+        Args:
+            resume_from: Optional path to a trajectory file to resume from
         
         Returns:
             Final game state with all results
@@ -295,14 +298,25 @@ class GameCoordinator:
         if self.logger:
             await self.logger.log_game_start(self.config, self.team_a.name, self.team_b.name)
         
+        existing_trajectory = None
+        if resume_from:
+            print(f"Resuming game from {resume_from}")
+            from redblackbench.trajectory.trajectory import GameTrajectory
+            existing_trajectory = GameTrajectory.load(resume_from)
+            
+            # Restore GameState and Agent States
+            self._restore_state_from_trajectory(existing_trajectory)
+            self._restore_agents_from_trajectory(existing_trajectory)
+
         if self.trajectory_collector:
             self._trajectory = self.trajectory_collector.start_game(
-                self.config, self.team_a, self.team_b
+                self.config, self.team_a, self.team_b, existing_trajectory
             )
         
         import random
         if self.config.seed is not None:
             random.seed(self.config.seed)
+            
         while not self.state.is_complete:
             await self.play_round()
         
@@ -312,6 +326,62 @@ class GameCoordinator:
             )
         
         return self.state
+
+    def _restore_state_from_trajectory(self, trajectory: "GameTrajectory") -> None:
+        """Restore game state from a loaded trajectory."""
+        outcomes = trajectory.get_outcomes()
+        round_outcomes = [o for o in outcomes if o.outcome_type == "round"]
+        round_outcomes.sort(key=lambda x: x.round_num)
+        
+        self.state.history = []
+        self.state.team_a_total = 0
+        self.state.team_b_total = 0
+        
+        for o in round_outcomes:
+            result = RoundResult(
+                round_num=o.round_num,
+                team_a_choice=Choice(o.team_a_choice) if o.team_a_choice else Choice.RED,
+                team_b_choice=Choice(o.team_b_choice) if o.team_b_choice else Choice.RED,
+                team_a_score=o.team_a_score,
+                team_b_score=o.team_b_score,
+                multiplier=o.multiplier,
+            )
+            self.state.history.append(result)
+            self.state.team_a_total += result.team_a_score
+            self.state.team_b_total += result.team_b_score
+        
+        if self.state.history:
+            self.state.current_round = self.state.history[-1].round_num + 1
+        else:
+            self.state.current_round = 1
+            
+        if self.state.current_round > self.config.num_rounds:
+            self.state.is_complete = True
+            
+        print(f"Restored state: Round {self.state.current_round}, Scores: {self.state.team_a_total}-{self.state.team_b_total}")
+
+    def _restore_agents_from_trajectory(self, trajectory: "GameTrajectory") -> None:
+        """Restore agent conversation histories from trajectory."""
+        def restore_team(team_obj, team_snapshot):
+            if not team_snapshot: return
+            agent_map = {a.agent_id: a for a in team_obj.agents}
+            for agent_snap in team_snapshot.agents:
+                if agent_snap.agent_id in agent_map:
+                    agent = agent_map[agent_snap.agent_id]
+                    agent.conversation_history = [
+                        d.to_dict() for d in agent_snap.conversation_history
+                    ]
+        
+        # Find latest snapshots
+        last_snap_a = None
+        last_snap_b = None
+        for ts in trajectory.timesteps:
+            if ts.team_a_snapshot: last_snap_a = ts.team_a_snapshot
+            if ts.team_b_snapshot: last_snap_b = ts.team_b_snapshot
+                
+        restore_team(self.team_a, last_snap_a)
+        restore_team(self.team_b, last_snap_b)
+        print("Restored agent conversation histories.")
     
     def get_trajectory(self) -> Optional["GameTrajectory"]:
         """Get the game trajectory if trajectory collection was enabled.
