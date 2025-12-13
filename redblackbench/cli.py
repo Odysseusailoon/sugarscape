@@ -103,13 +103,12 @@ def create_team(
     return Team(name=team_name, agents=agents)
 
 
-async def run_experiment(config: dict, save_trajectory: bool = True, resume: bool = False) -> None:
+async def run_experiment(config: dict, save_trajectory: bool = True) -> None:
     """Run an experiment based on configuration.
     
     Args:
         config: Experiment configuration dictionary
         save_trajectory: Whether to save full trajectory data
-        resume: Whether to resume from existing trajectory if found
     """
     # Extract configurations
     game_config_dict = config.get("game", {})
@@ -149,18 +148,9 @@ async def run_experiment(config: dict, save_trajectory: bool = True, resume: boo
         
         # Create trajectory collector if enabled
         trajectory_collector = None
-        resume_from_path = None
-        
         if save_trajectory:
             trajectory_id = f"{experiment_name}_game_{game_num}"
             trajectory_collector = TrajectoryCollector(trajectory_id=trajectory_id)
-            
-            # Check for existing trajectory to resume
-            if resume:
-                traj_file = trajectories_path / f"{trajectory_id}.json"
-                if traj_file.exists():
-                    print(f"Found existing trajectory: {traj_file}")
-                    resume_from_path = str(traj_file)
         
         # Create coordinator
         coordinator = GameCoordinator(
@@ -173,7 +163,7 @@ async def run_experiment(config: dict, save_trajectory: bool = True, resume: boo
         
         # Play the game
         try:
-            final_state = await coordinator.play_game(resume_from=resume_from_path)
+            final_state = await coordinator.play_game()
             
             # Print results
             summary = coordinator.get_summary()
@@ -362,11 +352,6 @@ Examples:
         action="store_true",
         help="Disable trajectory collection (saves memory/disk)"
     )
-    run_parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume from existing trajectory if found"
-    )
     
     # Analyze command
     analyze_parser = subparsers.add_parser("analyze", help="Analyze experiment results")
@@ -418,8 +403,7 @@ Examples:
             sys.exit(1)
         
         save_trajectory = not getattr(args, 'no_trajectory', False)
-        resume = getattr(args, 'resume', False)
-        asyncio.run(run_experiment(config, save_trajectory=save_trajectory, resume=resume))
+        asyncio.run(run_experiment(config, save_trajectory=save_trajectory))
         
     elif args.command == "analyze":
         asyncio.run(analyze_results(args.results_dir))

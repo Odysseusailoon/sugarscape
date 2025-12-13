@@ -6,6 +6,7 @@ from redblackbench.sugarscape.config import SugarscapeConfig
 from redblackbench.sugarscape.environment import SugarEnvironment
 from redblackbench.sugarscape.agent import SugarAgent
 from redblackbench.sugarscape.experiment import ExperimentLogger, MetricsCalculator
+from redblackbench.sugarscape.trade import TradeSystem
 
 class SugarSimulation:
     """Main simulation controller for Sugarscape."""
@@ -13,6 +14,8 @@ class SugarSimulation:
     def __init__(self, config: SugarscapeConfig = None, agent_factory=None, experiment_name: str = "baseline"):
         self.config = config or SugarscapeConfig()
         self.env = SugarEnvironment(self.config)
+        self.trade_system = TradeSystem(self.env) if self.config.enable_trade else None
+        
         self.agents: List[SugarAgent] = []
         self.tick = 0
         self.next_agent_id = 1
@@ -42,6 +45,22 @@ class SugarSimulation:
         v = self.rng.randint(*self.config.vision_range)
         max_age = self.rng.randint(*self.config.max_age_range)
         
+        # Spice attributes (if enabled)
+        spice = 0
+        m_spice = 0
+        if self.config.enable_spice:
+            spice = self.rng.randint(*self.config.initial_spice_range)
+            m_spice = self.rng.randint(*self.config.metabolism_spice_range)
+        
+        # Determine Persona
+        persona = "A" # default
+        if self.config.enable_personas:
+            # Simple weighted choice
+            dist = self.config.persona_distribution
+            keys = list(dist.keys()) # A, B, C, D
+            probs = [dist[k] for k in keys]
+            persona = self.rng.choices(keys, weights=probs, k=1)[0]
+        
         # Random position
         pos = self.env.get_random_unoccupied_pos(self.rng)
         
@@ -52,8 +71,11 @@ class SugarSimulation:
             metabolism=m,
             max_age=max_age,
             wealth=w0,
-            age=0
+            age=0,
+            spice=spice,
+            metabolism_spice=m_spice
         )
+        agent.persona = persona
         self.next_agent_id += 1
         
         self.agents.append(agent)
@@ -66,7 +88,7 @@ class SugarSimulation:
         # 1. Environment Growback
         self.env.growback()
         
-        # 2. Agent updates
+        # 2. Agent updates (Move and Harvest)
         # Shuffle order
         self.rng.shuffle(self.agents)
         
@@ -77,12 +99,30 @@ class SugarSimulation:
             if not agent.alive:
                 dead_agents.append(agent)
                 
-        # 3. Handle deaths and replacement
+        # 3. Trade Phase (New)
+        if self.config.enable_trade and self.trade_system:
+            # Only alive agents trade
+            live_agents = [a for a in self.agents if a.alive]
+            self.trade_system.execute_trade_round(live_agents)
+                
+        # 4. Handle deaths and replacement
+        # Note: step() marks dead, but we process removal here
+        # We need to re-check aliveness because trade might technically (though unlikely) affect survival if implemented that way
+        # Actually standard model: trade happens before metabolism. 
+        # But our agent.step() does Move -> Harvest -> Metabolize -> Die.
+        # So if we trade AFTER step(), agents might have already died from metabolism.
+        # Ideally: Move -> Harvest -> Trade -> Metabolize.
+        # Current impl: agent.step() does it all. 
+        # For simplicity in this iteration, we trade after metabolism (survivors trade).
+        # OR we should split agent.step(). 
+        # Given constraints, let's keep it simple: Survivors trade, then wait for next tick to metabolize again.
+        
         for agent in dead_agents:
-            self.agents.remove(agent)
-            self.env.remove_agent(agent)
-            # Replacement Rule: Constant population
-            self._create_agent()
+            if agent in self.agents:
+                self.agents.remove(agent)
+                self.env.remove_agent(agent)
+                # Replacement Rule: Constant population
+                self._create_agent()
             
         # Logging
         if self.tick % 10 == 0:
@@ -110,14 +150,18 @@ class SugarSimulation:
                     "id": a.agent_id,
                     "pos": a.pos,
                     "wealth": a.wealth,
+                    "spice": a.spice,
                     "age": a.age,
+                    "persona": a.persona,
                     "vision": a.vision,
                     "metabolism": a.metabolism,
+                    "metabolism_spice": a.metabolism_spice,
                     "metrics": getattr(a, 'metrics', {})
                 }
                 for a in self.agents
             ],
             "sugar_map": self.env.sugar_amount.tolist(),
+            "spice_map": self.env.spice_amount.tolist(),
             "sugar_capacity": self.env.sugar_capacity.tolist()
         }
         self.logger.save_snapshot(data, filename)
@@ -125,6 +169,7 @@ class SugarSimulation:
     def get_stats(self) -> Dict[str, Any]:
         """Get current statistics."""
         wealths = [a.wealth for a in self.agents]
+        spices = [a.spice for a in self.agents]
         ages = [a.age for a in self.agents]
         positions = [a.pos for a in self.agents]
         
@@ -140,6 +185,7 @@ class SugarSimulation:
             "tick": self.tick,
             "population": len(self.agents),
             "mean_wealth": np.mean(wealths) if wealths else 0,
+            "mean_spice": np.mean(spices) if spices else 0,
             "max_wealth": np.max(wealths) if wealths else 0,
             "min_wealth": np.min(wealths) if wealths else 0,
             "gini": self._gini_coefficient(wealths) if wealths else 0,

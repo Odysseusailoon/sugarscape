@@ -105,7 +105,6 @@ async def run_experiment_config(cfg_path: Path, no_trajectory: bool = False) -> 
         "run",
         "--config",
         str(cfg_path),
-        "--resume",
     ]
     if no_trajectory:
         args.append("--no-trajectory")
