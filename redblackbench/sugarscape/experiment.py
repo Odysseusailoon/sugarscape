@@ -100,6 +100,7 @@ class ExperimentLogger:
         # Create timestamped run directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_dir = self.base_dir / experiment_type / f"experiment_{timestamp}"
+        self.experiment_id = f"experiment_{timestamp}" # Store ID for trajectory naming
         self.plots_dir = self.run_dir / "plots"
         
         self._init_directories()
@@ -111,7 +112,12 @@ class ExperimentLogger:
         self.csv_file = self.run_dir / "metrics.csv"
         self._csv_headers = [
             "tick", "population", "mean_wealth", "gini", "moran_i", 
-            "mean_age", "avg_displacement", "avg_exploration"
+            "mean_age", "avg_displacement", "avg_exploration",
+            # Welfare metrics
+            "utilitarian_welfare", "average_welfare", "rawlsian_welfare", "nash_welfare",
+            "welfare_gini", "gini_adjusted_welfare", "atkinson_index_05", "atkinson_adjusted_05",
+            "survival_rate", "mean_lifespan_utilization",
+            "welfare_std", "welfare_median", "welfare_max", "welfare_min"
         ]
         self._init_csv()
 
@@ -157,3 +163,7 @@ class ExperimentLogger:
 
     def get_plots_dir(self) -> str:
         return str(self.plots_dir)
+
+    def get_log_path(self, filename: str) -> str:
+        """Get full path for a log file in the run directory."""
+        return str(self.run_dir / filename)

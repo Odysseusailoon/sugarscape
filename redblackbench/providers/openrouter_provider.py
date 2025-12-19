@@ -1,7 +1,8 @@
 """OpenRouter LLM provider for RedBlackBench."""
 
 import os
-from typing import Optional, List
+import asyncio
+from typing import Optional, List, Any
 
 from redblackbench.providers.openai_provider import OpenAIProvider
 
@@ -44,8 +45,18 @@ class OpenRouterProvider(OpenAIProvider):
         # Override client with custom base URL and headers
         from openai import AsyncOpenAI
         
+        # Determine the key to use: passed api_key -> OPENROUTER_API_KEY -> OPENAI_API_KEY -> "dummy"
+        # The dummy fallback allows instantiation without a key (for testing/mocking), 
+        # though actual calls will fail if not mocked.
+        final_api_key = (
+            api_key 
+            or os.environ.get("OPENROUTER_API_KEY") 
+            or os.environ.get("OPENAI_API_KEY") 
+            or "sk-dummy-key"
+        )
+
         self._client = AsyncOpenAI(
-            api_key=api_key or os.environ.get("OPENROUTER_API_KEY"),
+            api_key=final_api_key,
             base_url=base_url,
             default_headers={
                 "HTTP-Referer": "https://github.com/redblackbench/redblackbench",
@@ -57,6 +68,23 @@ class OpenRouterProvider(OpenAIProvider):
     def provider_name(self) -> str:
         """Name of the provider."""
         return "openrouter"
+
+    async def _call_api_with_retry(self, **kwargs) -> Any:
+        """Call API with simple retry logic."""
+        max_retries = 3
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                return await self._client.chat.completions.create(**kwargs)
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise e
+                
+                # Simple exponential backoff
+                delay = base_delay * (2 ** attempt)
+                print(f"API call failed (attempt {attempt+1}/{max_retries}): {e}. Retrying in {delay}s...")
+                await asyncio.sleep(delay)
 
     async def generate(
         self,

@@ -45,8 +45,10 @@ class OpenAIProvider(BaseLLMProvider):
             )
         
         # Initialize async client
+        # Use a dummy key if none provided to allow instantiation (calls will fail)
+        final_api_key = api_key or os.environ.get("OPENAI_API_KEY") or "sk-dummy-key"
         self._client = AsyncOpenAI(
-            api_key=api_key or os.environ.get("OPENAI_API_KEY")
+            api_key=final_api_key
         )
     
     @property

@@ -1,6 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import random
-from typing import Optional, Tuple, List, TYPE_CHECKING
+from typing import Optional, Tuple, List, TYPE_CHECKING, Deque, Dict, Any
+from collections import deque
 
 if TYPE_CHECKING:
     from redblackbench.sugarscape.environment import SugarEnvironment
@@ -24,16 +25,47 @@ class SugarAgent:
     
     age: int = 0
     persona: str = "A" # Default to Conservative
+    name: str = ""
+
+    # Non-init fields (runtime memory)
+    trade_memory: Dict[int, Deque[Dict[str, Any]]] = field(default_factory=dict, init=False, repr=False)
+    partner_trust: Dict[int, float] = field(default_factory=dict, init=False, repr=False)
     
     def __post_init__(self):
         self.alive = True
+        if not self.name:
+            self.name = f"Person {self.agent_id}"
         # Metrics tracking
         self.initial_pos = self.pos
         self.visited_cells = {self.pos}
+        # Track recent history (pos, sugar, spice) for LLM context and optimized Nomad logic
+        # Default limit 15 as requested, though LLM agent might override/use config
+        self.recent_history = deque(maxlen=15)
         self.metrics = {
             "displacement": 0.0,
             "unique_visited": 1
         }
+
+    def get_partner_trade_log(self, partner_id: int, maxlen: int = 50) -> Deque[Dict[str, Any]]:
+        """Get (and create if needed) the trade log deque for a given partner."""
+        existing = self.trade_memory.get(partner_id)
+        if existing is None:
+            log: Deque[Dict[str, Any]] = deque(maxlen=maxlen)
+            self.trade_memory[partner_id] = log
+            return log
+        if existing.maxlen != maxlen:
+            resized: Deque[Dict[str, Any]] = deque(existing, maxlen=maxlen)
+            self.trade_memory[partner_id] = resized
+            return resized
+        return existing
+
+    def get_partner_trust(self, partner_id: int, default: float = 0.5) -> float:
+        """Return current trust score for a partner in [0, 1]."""
+        return float(self.partner_trust.get(partner_id, default))
+
+    def update_partner_trust(self, partner_id: int, new_value: float) -> None:
+        """Set trust score for a partner, clamped to [0, 1]."""
+        self.partner_trust[partner_id] = max(0.0, min(1.0, float(new_value)))
     
     @property
     def welfare(self) -> float:
@@ -70,19 +102,28 @@ class SugarAgent:
         # Update movement metrics
         self._update_metrics(env)
         
-        # 2. Metabolize
+        # 2. Metabolize + Age + Death check
+        # Note: In the full simulation loop, trade (if enabled) is handled externally
+        # before this phase. This method keeps the classic single-agent ordering.
+        self.metabolize_age_and_check_death(env)
+
+    def metabolize_age_and_check_death(self, env: "SugarEnvironment") -> None:
+        """Apply metabolism, age increment, and death condition."""
+        if not self.alive:
+            return
+
+        # Metabolize
         self.wealth -= self.metabolism
         if env.config.enable_spice:
             self.spice -= self.metabolism_spice
-        
-        # 3. Age
+
+        # Age
         self.age += 1
-        
-        # 4. Check death
+
         # Die if EITHER resource is depleted
         if self.wealth <= 0 or (env.config.enable_spice and self.spice <= 0) or self.age >= self.max_age:
             self.alive = False
-            # Remove from environment is handled by the simulation loop or environment
+            # Removal/replacement is handled by the simulation loop.
             
     def _move_and_harvest(self, env: "SugarEnvironment"):
         """Move to the best location within vision and harvest sugar."""
@@ -214,8 +255,11 @@ class SugarAgent:
         elif self.persona == "C": # Nomad
             # Novelty proxy: distance (moving far is novel) + unvisited bonus
             novelty = dist
-            if pos not in self.visited_cells:
-                novelty += 10  # Bonus for unvisited cells
+            
+            # Check recent history for novelty (optimization)
+            recently_visited = any(item[0] == pos for item in self.recent_history)
+            if not recently_visited:
+                novelty += 10  # Bonus for unvisited (recently) cells
 
             if is_survival_mode:
                  # Check strict death condition: if move implies death next turn?
@@ -279,4 +323,10 @@ class SugarAgent:
         
         # Track visited cells
         self.visited_cells.add(self.pos)
+        
+        # Track recent history
+        s_val = env.get_sugar_at(self.pos)
+        p_val = env.get_spice_at(self.pos)
+        self.recent_history.append((self.pos, s_val, p_val))
+        
         self.metrics["unique_visited"] = len(self.visited_cells)

@@ -1,0 +1,3 @@
+tick,population,mean_wealth,gini,moran_i,mean_age,avg_displacement,avg_exploration
+10,10,12.1,0.3925619834710743,0.28551044234012196,6.6,2.3,2.9
+20,10,15.3,0.36405228758169916,0.7405226732775538,10.4,4.2,4.4
