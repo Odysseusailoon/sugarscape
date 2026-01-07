@@ -28,12 +28,13 @@ class SugarscapeConfig:
     
     # Personas (Optional)
     enable_personas: bool = False
-    # Distribution: A (Conservative), B (Foresight), C (Nomad), D (Risk-taker)
+    # Distribution: A (Conservative), B (Foresight), C (Nomad), D (Risk-taker), E (Samaritan/Altruist)
     persona_distribution: Dict[str, float] = field(default_factory=lambda: {
         "A": 0.36, 
         "B": 0.29, 
         "C": 0.21, 
-        "D": 0.14
+        "D": 0.14,
+        "E": 0.0  # Samaritan (altruistic) - disabled by default
     })
     # Persona Hyperparameters
     risk_aversion: float = 0.85     # gamma
@@ -59,7 +60,7 @@ class SugarscapeConfig:
     llm_provider_model: str = "openai/gpt-4o"
     llm_goal_preset: str = "survival"  # Goal preset: "survival", "wealth", "egalitarian", "utilitarian"
     llm_goal_prompt: str = ""  # Will be set based on preset or custom input
-    llm_history_limit: int = 15 # Number of recent steps to keep in history context
+    llm_history_limit: int = 15 # Number of recent steps to keep in history context (safe with 262K+ context models)
 
     @staticmethod
     def get_goal_prompt(preset: str) -> str:
@@ -87,7 +88,16 @@ You value equitable outcomes over maximum individual wealth.""",
 2. **Secondary:** Maintain your own operational capacity to continue contributing to total welfare.
 3. **Consider:** The broader impact of your decisions on the entire population.
 
-Total welfare maximization may require helping others at your own expense."""
+Total welfare maximization may require helping others at your own expense.""",
+
+            "samaritan": """Your goal is to help others by leaving resources for those who need them more. You should:
+
+1. **Primary:** When you have adequate resources, avoid consuming high-resource spots. Leave them for agents who are struggling.
+2. **Secondary:** Maintain minimal resources to survive so you can continue helping others.
+3. **Observe:** Pay attention to nearby agents who might be in critical condition (low survival time).
+4. **Spread out:** Avoid crowding to give others more space to find resources.
+
+Philosophy: True altruism means sacrificing personal gain for collective benefit. When you are affluent, let others take what they need. When you encounter struggling agents, help them access resources rather than competing."""
         }
 
         if preset in goals:

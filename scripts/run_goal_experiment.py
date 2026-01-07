@@ -12,7 +12,10 @@ from redblackbench.sugarscape.simulation import SugarSimulation
 from redblackbench.sugarscape.config import SugarscapeConfig
 
 
-def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42):
+def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
+                       model: str = "moonshotai/kimi-k2-thinking",
+                       population: int = 50, width: int = 50, height: int = 50,
+                       difficulty: str = "standard", trade_rounds: int = 4):
     """Run a single experiment with a specific goal preset."""
 
     print(f"\n{'='*60}")
@@ -21,17 +24,36 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42):
 
     # Configure simulation
     config = SugarscapeConfig(
-        initial_population=50,
+        initial_population=population,
         max_ticks=ticks,
-        width=50,
-        height=50,
+        width=width,
+        height=height,
         seed=seed,
         enable_llm_agents=True,
         llm_agent_ratio=1.0,  # All agents are LLM
+        llm_provider_model=model,
         llm_goal_preset=goal_preset,
         enable_spice=True,
-        enable_trade=False  # Disable trade to focus on movement decisions
+        enable_trade=True,  # Enable trade for goal experiments
+        trade_dialogue_rounds=trade_rounds
     )
+
+    # Apply difficulty preset
+    if difficulty == "easy":
+        config.sugar_growback_rate = 2
+        config.max_sugar_capacity = 6
+        config.spice_growback_rate = 2
+        config.max_spice_capacity = 6
+    elif difficulty == "harsh":
+        config.sugar_growback_rate = 1
+        config.max_sugar_capacity = 2
+        config.spice_growback_rate = 1
+        config.max_spice_capacity = 2
+    elif difficulty == "desert":
+        config.sugar_growback_rate = 0
+        config.max_sugar_capacity = 4
+        config.spice_growback_rate = 0
+        config.max_spice_capacity = 4
 
     print(f"Goal: {goal_preset}")
     print(f"Goal Prompt: {config.llm_goal_prompt[:100]}...")
@@ -62,7 +84,8 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42):
     return sim.logger.run_dir, final_stats
 
 
-def compare_goals(goals_to_test, ticks=100, seed=42):
+def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a22b-thinking",
+                  population=50, width=50, height=50, difficulty="standard", trade_rounds=4):
     """Run experiments with multiple goal presets and compare results."""
 
     results = {}
@@ -74,7 +97,7 @@ def compare_goals(goals_to_test, ticks=100, seed=42):
 
     for goal in goals_to_test:
         try:
-            run_dir, final_stats = run_goal_experiment(goal, ticks, seed)
+            run_dir, final_stats = run_goal_experiment(goal, ticks, seed, model, population, width, height, difficulty, trade_rounds)
             results[goal] = {
                 'run_dir': run_dir,
                 'final_stats': final_stats
@@ -147,6 +170,26 @@ def parse_args():
     parser.add_argument("--ticks", type=int, default=100,
                         help="Number of simulation ticks")
 
+    parser.add_argument("--model", type=str,
+                        choices=["moonshotai/kimi-k2-thinking", "qwen/qwen3-30b-a3b-thinking-2507",
+                                "qwen/qwen3-vl-235b-a22b-thinking", "qwen/qwen3-vl-8b-thinking",
+                                "qwen/qwen3-next-80b-a3b-thinking", "baidu/ernie-4.5-21b-a3b-thinking",
+                                "thudm/glm-4.1v-9b-thinking"],
+                        default="moonshotai/kimi-k2-thinking",
+                        help="OpenRouter thinking model for LLM agents")
+
+    parser.add_argument("--population", type=int, default=50,
+                        help="Initial population size")
+
+    parser.add_argument("--width", type=int, default=50, help="Grid width")
+    parser.add_argument("--height", type=int, default=50, help="Grid height")
+
+    parser.add_argument("--difficulty", type=str, choices=["standard", "easy", "harsh", "desert"],
+                        default="standard", help="Difficulty preset")
+
+    parser.add_argument("--trade-rounds", type=int, default=4,
+                        help="Maximum dialogue rounds during trade negotiations")
+
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
 
@@ -168,10 +211,12 @@ def main():
 
     if args.single:
         # Run single experiment
-        run_goal_experiment(args.single, args.ticks, args.seed)
+        run_goal_experiment(args.single, args.ticks, args.seed, args.model,
+                          args.population, args.width, args.height, args.difficulty, args.trade_rounds)
     else:
         # Run comparison
-        compare_goals(args.goals, args.ticks, args.seed)
+        compare_goals(args.goals, args.ticks, args.seed, args.model,
+                     args.population, args.width, args.height, args.difficulty, args.trade_rounds)
 
 
 if __name__ == "__main__":

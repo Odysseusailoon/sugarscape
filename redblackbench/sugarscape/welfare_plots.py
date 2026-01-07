@@ -363,3 +363,4 @@ class WelfarePlotter:
         
         print(f"Generated comparison plots in: {output_dir}")
 
+

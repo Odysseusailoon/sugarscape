@@ -97,10 +97,13 @@ class ExperimentLogger:
         self.base_dir = Path(base_dir)
         self.experiment_type = experiment_type
         
-        # Create timestamped run directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = self.base_dir / experiment_type / f"experiment_{timestamp}"
-        self.experiment_id = f"experiment_{timestamp}" # Store ID for trajectory naming
+        # Create timestamped run directory with microseconds + random suffix for uniqueness
+        import random as rand_mod
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")  # Include microseconds
+        random_suffix = rand_mod.randint(1000, 9999)  # Random 4-digit suffix
+        unique_id = f"{timestamp}_{random_suffix}"
+        self.run_dir = self.base_dir / experiment_type / f"experiment_{unique_id}"
+        self.experiment_id = f"experiment_{unique_id}" # Store ID for trajectory naming
         self.plots_dir = self.run_dir / "plots"
         
         self._init_directories()

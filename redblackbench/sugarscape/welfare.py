@@ -265,3 +265,4 @@ class WelfareCalculator:
         atkinson = 1 - (ede / mean_val)
         return float(max(0.0, min(1.0, atkinson)))  # Clamp to [0, 1]
 
+

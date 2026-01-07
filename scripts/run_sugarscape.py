@@ -19,20 +19,33 @@ def parse_args():
     
     parser.add_argument("--population", type=int, default=50,
                         help="Initial population size")
-    
+
     # Environment Arguments
     parser.add_argument("--variant", type=str, choices=["sugar", "spice"], default="spice",
                         help="Environment variant: 'sugar' (Classic V1) or 'spice' (Sugar+Spice V2)")
-    
+
     parser.add_argument("--width", type=int, default=50, help="Grid width")
     parser.add_argument("--height", type=int, default=50, help="Grid height")
-    
+
     parser.add_argument("--difficulty", type=str, choices=["standard", "easy", "harsh", "desert"], default="standard",
                         help="Difficulty preset affecting resource density and growback")
 
+    # Agent Attributes
+    parser.add_argument("--wealth-min", type=int, default=5, help="Minimum initial wealth")
+    parser.add_argument("--wealth-max", type=int, default=25, help="Maximum initial wealth")
+    parser.add_argument("--metabolism-min", type=int, default=1, help="Minimum metabolism rate")
+    parser.add_argument("--metabolism-max", type=int, default=4, help="Maximum metabolism rate")
+    parser.add_argument("--vision-min", type=int, default=1, help="Minimum vision range")
+    parser.add_argument("--vision-max", type=int, default=6, help="Maximum vision range")
+
     # LLM Arguments
-    parser.add_argument("--model", type=str, default="thudm/glm-4.1v-9b-thinking",
-                        help="OpenRouter model ID for LLM agents")
+    parser.add_argument("--model", type=str,
+                        choices=["moonshotai/kimi-k2-thinking", "qwen/qwen3-30b-a3b-thinking-2507",
+                                "qwen/qwen3-vl-235b-a22b-thinking", "qwen/qwen3-vl-8b-thinking",
+                                "qwen/qwen3-next-80b-a3b-thinking", "baidu/ernie-4.5-21b-a3b-thinking",
+                                "thudm/glm-4.1v-9b-thinking"],
+                        default="moonshotai/kimi-k2-thinking",
+                        help="OpenRouter thinking model: kimi-k2, qwen-30b, qwen-235b, qwen-8b, qwen-80b, ernie, glm")
 
     parser.add_argument("--ratio", type=float, default=1.0,
                         help="Ratio of LLM agents (0.0 - 1.0) when in LLM mode")
@@ -45,7 +58,11 @@ def parse_args():
     parser.add_argument("--custom-goal", type=str,
                         default="",
                         help="Custom goal prompt for LLM agents (overrides --goal-preset)")
-    
+
+    # Trade Configuration
+    parser.add_argument("--trade-rounds", type=int, default=4,
+                        help="Maximum dialogue rounds during trade negotiations")
+
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
     
@@ -62,7 +79,11 @@ def main():
         max_ticks=args.ticks,
         width=args.width,
         height=args.height,
-        seed=args.seed
+        seed=args.seed,
+        initial_wealth_range=(args.wealth_min, args.wealth_max),
+        metabolism_range=(args.metabolism_min, args.metabolism_max),
+        vision_range=(args.vision_min, args.vision_max),
+        trade_dialogue_rounds=args.trade_rounds
     )
     
     # Apply Difficulty Presets

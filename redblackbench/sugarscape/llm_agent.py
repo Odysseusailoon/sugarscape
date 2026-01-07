@@ -21,6 +21,7 @@ class LLMSugarAgent(SugarAgent):
     def __post_init__(self):
         super().__post_init__()
         self.conversation_history = []
+        self.move_history = []  # Track position at each tick: [(tick, pos, action, wealth, spice)]
 
     async def async_decide_move(self, env: "SugarEnvironment") -> Dict[str, Any]:
         """Async decision making for parallel execution.

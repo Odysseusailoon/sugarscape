@@ -223,6 +223,18 @@ class SugarSimulation:
                 
                 # Harvest + metrics update (metabolism/aging happens later, after trade)
                 rewards = agent._harvest_and_update_metrics(self.env)
+                
+                # Record move history for LLM agents
+                if hasattr(agent, 'move_history'):
+                    agent.move_history.append({
+                        "tick": self.tick,
+                        "pos": agent.pos,
+                        "action": target_pos,
+                        "wealth": agent.wealth,
+                        "spice": agent.spice,
+                        "sugar_harvested": rewards["sugar_harvested"],
+                        "spice_harvested": rewards.get("spice_harvested", 0),
+                    })
                     
                 # Record Action in Trajectory
                 action_record = SugarActionRecord(

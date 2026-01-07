@@ -281,6 +281,64 @@ class SugarAgent:
                      0.05 * beta * site_quality + 
                      0.10 * lam * dist)
         
+        elif self.persona == "E":  # Samaritan (Altruistic)
+            # Philosophy: Help others by leaving resources for those who need them more.
+            # Behavior: When affluent, avoid high-resource spots. When critical, survive first.
+            
+            # Survival mode: must survive to help others
+            if is_survival_mode:
+                return utility_now - 0.3 * dist
+            
+            # Calculate how affluent we are (survival ratio)
+            if env.config.enable_spice:
+                sugar_ratio = self.wealth / (self.metabolism * 10) if self.metabolism > 0 else 1.0
+                spice_ratio = self.spice / (self.metabolism_spice * 10) if self.metabolism_spice > 0 else 1.0
+                affluence = min(sugar_ratio, spice_ratio)
+            else:
+                affluence = self.wealth / (self.metabolism * 10) if self.metabolism > 0 else 1.0
+            affluence = min(1.0, affluence)  # Cap at 1.0
+            
+            # Count nearby struggling agents (within vision range)
+            nearby_struggling = 0
+            total_nearby_welfare = 0.0
+            for (other_pos, other_agent) in env.grid_agents.items():
+                if other_agent == self or not other_agent.alive:
+                    continue
+                agent_dist = self._get_distance(self.pos, other_pos, env.width, env.height)
+                if agent_dist <= self.vision:
+                    other_survival = other_agent.wealth / other_agent.metabolism if other_agent.metabolism > 0 else 100
+                    if other_survival < 5:  # Struggling if < 5 timesteps
+                        nearby_struggling += 1
+                    total_nearby_welfare += other_agent.welfare
+            
+            # Resources at this position
+            resource_here = sugar_at + spice_at
+            
+            # Altruistic scoring components:
+            # 1. Personal utility (reduced weight when affluent)
+            personal_weight = max(0.3, 1.0 - 0.5 * affluence)  # 0.3-1.0 based on affluence
+            
+            # 2. Sacrifice bonus: when affluent and others are struggling, 
+            #    prefer LOWER resource spots (leave high spots for others)
+            sacrifice_bonus = 0.0
+            if affluence > 0.5 and nearby_struggling > 0:
+                # Negative score for high-resource spots when we don't need them
+                sacrifice_bonus = -0.4 * resource_here * min(nearby_struggling, 3)
+            
+            # 3. Spread out: avoid crowding to give others more space
+            spread_bonus = -1.2 * kappa * local_density
+            
+            # 4. Prefer positions near resource peaks so others can find us to trade
+            #    (indirectly helps society by being accessible)
+            accessibility = 0.2 * site_quality
+            
+            return (personal_weight * utility_now + 
+                    sacrifice_bonus +
+                    spread_bonus +
+                    accessibility -
+                    0.35 * dist +
+                    0.1 * lam * dist)
+        
         return utility_now
 
     def _get_visible_spots(self, env: "SugarEnvironment") -> List[Tuple[int, int]]:

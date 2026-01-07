@@ -1,0 +1,2 @@
+tick,population,mean_wealth,gini,moran_i,mean_age,avg_displacement,avg_exploration,utilitarian_welfare,average_welfare,rawlsian_welfare,nash_welfare,welfare_gini,gini_adjusted_welfare,atkinson_index_05,atkinson_adjusted_05,survival_rate,mean_lifespan_utilization,welfare_std,welfare_median,welfare_max,welfare_min
+10,20,14.35,0.3468641114982578,0.0,7.35,2.5,3.85,217.87681472837932,10.893840736418966,2.0,9.287531263409878,0.2801111266773746,7.842354733896769,0.0694554008013546,10.137204661804862,1.0,0.09315311376412452,5.325058168934162,10.159441562932958,18.999999999999996,2.0

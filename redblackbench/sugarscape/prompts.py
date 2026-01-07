@@ -45,13 +45,34 @@ You must monitor and respond to your resource levels, which are provided as stat
 
 # Response Format
 
-Return your response in the following format:
+You MUST respond in exactly this format:
 
-REASONING: [Your analytical assessment of the current situation, resource priorities, and decision rationale. 2-4 sentences. Be clear and logical.]
+```
+REASONING: <2-4 sentences explaining your analysis>
+ACTION: <DIRECTION>
+```
 
-ACTION: [Specific movement decision expressed as a directional reference from the provided observations. E.g., "Move NORTH toward large deposit" or "Remain at CURRENT_LOCATION".]
+Where `<DIRECTION>` must be ONE of these exact values:
+- `NORTH` - move north
+- `SOUTH` - move south  
+- `EAST` - move east
+- `WEST` - move west
+- `NORTHEAST` - move northeast
+- `NORTHWEST` - move northwest
+- `SOUTHEAST` - move southeast
+- `SOUTHWEST` - move southwest
+- `STAY` - remain at current location
 
-**Important:** Your ACTION must reference a location **exactly as described** in your observational input (e.g., "NORTH", "SOUTHEAST", "CURRENT_LOCATION"). Do not invent coordinates.
+**Example valid response:**
+```
+REASONING: Sugar reserves are adequate but Spice is critical. The NORTH location has the highest Spice deposit.
+ACTION: NORTH
+```
+
+**Important:** 
+- ACTION must be a single direction word from the list above
+- Do NOT include coordinates, descriptions, or extra text after ACTION
+- Do NOT invent locations not shown in the environment scan
 """
 
 def build_sugarscape_observation_prompt(
@@ -218,7 +239,12 @@ def build_sugarscape_trade_system_prompt(
         - The environment executes trades using the private execution fields.
     """
     if allow_fraud:
-        execution_mechanics = """- **Communication vs. Execution:** Your stated offer (public_offer) is communicated to the other agent but is not binding. Actual resource transfer is determined by your `private_execute_give` field.
+        execution_mechanics = """- **Communication vs. Execution:** Your stated offer (`public_offer`) is communicated to the other agent but is not binding. Actual resource transfer is determined by your `private_execute_give` field.
+- **Critical semantics (do not confuse directions):**
+  - `public_offer.give` = what **YOU will SEND** to the partner if the deal executes.
+  - `public_offer.receive` = what **YOU want to GET** from the partner if the deal executes.
+  - If you respond **ACCEPT** to the partner's offer, you are agreeing that *you will SEND what the partner requested*.
+  - `private_execute_give` always means what **YOU will SEND** (never what you receive).
 - **Information Asymmetry:** You may provide incomplete or inaccurate information in communications. Other agents may do the same. Consider the strategic implications of misalignment between stated and actual transfers.
 - **Strategic Considerations:** Your communication strategy should reflect resource constraints, risk assessment, and uncertainty about partner reliability."""
     else:
@@ -240,6 +266,7 @@ You have encountered another agent. You may negotiate resource exchange (Sugar a
 - You can propose exchanges, accept/reject proposals, or terminate negotiation.
 - Trade execution occurs when one agent makes an OFFER and the other responds with ACCEPT.
 - Either agent may end negotiation at any point.
+ - **Anti-timeout rule:** Do NOT waste the final round with small talk. If there is an active offer, choose ACCEPT or REJECT. If there is no active offer, either make an OFFER or WALK_AWAY.
 
 # Resource Constraints
 
@@ -279,6 +306,10 @@ JSON schema:
 - `intent`: Current action type (communicating, proposing offer, accepting, rejecting, or terminating).
 - `public_offer`: Exchange terms communicated to other agent (your proposed transfer and requested return). Used when intent = "OFFER". Otherwise set all to 0.
 - `private_execute_give`: Actual resources transferred if trade executes. This determines real execution.
+
+**Acceptance example (direction sanity check):**
+- Partner offer (from their perspective): `give={{"sugar":10, "spice":0}}, receive={{"sugar":0, "spice":2}}`
+- If you ACCEPT honestly, you will SEND what they requested: `private_execute_give={{"sugar":0, "spice":2}}`
 
 **Important:** Avoid using curly braces {{ }} in REASONING or COMMUNICATE fields (breaks JSON parsing).
 """

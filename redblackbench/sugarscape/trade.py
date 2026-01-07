@@ -120,7 +120,6 @@ class TradeSystem:
             
             if w_buyer_new > w_buyer_current and w_seller_new > w_seller_current:
                 # Execute Trade
-                buyer.wealth += int(sugar_amt) # Integer truncation for simplicity in this discrete model? 
                 # Actually, standard model might use floats for resources, but our agent uses int.
                 # Let's support float resources or round.
                 # Since our simulation uses ints, let's stick to int exchanges if possible, or cast.
@@ -207,6 +206,17 @@ class DialogueTradeSystem:
             # If a loop is already running (rare in this codebase), schedule on it.
             loop = asyncio.get_event_loop()
             loop.run_until_complete(self._negotiate_pair(a, b, tick))
+        except Exception as e:
+            # Never crash the whole simulation because a trade LLM call failed
+            print(f"[TRADE] Negotiation error: {a.name} <-> {b.name} (tick {tick}): {e}")
+            self._record_no_trade(
+                a,
+                b,
+                tick,
+                outcome="ERROR",
+                pending_offer=None,
+                conversation=[{"type": "error", "tick": tick, "error": str(e)}],
+            )
 
     def _is_llm_trader(self, agent: SugarAgent) -> bool:
         if LLMSugarAgent is None:
@@ -235,10 +245,13 @@ class DialogueTradeSystem:
 
     async def _negotiate_pair(self, a: SugarAgent, b: SugarAgent, tick: int) -> None:
         transcript: List[str] = []
+        full_conversation: List[Dict[str, str]] = []  # Store full conversation for logging
         pending_offer: Optional[Dict[str, Dict[str, int]]] = None
         pending_offer_from: Optional[int] = None
         pending_offer_private_execute: Optional[Dict[str, int]] = None
         pending_offer_public_text: str = "(None)"
+        
+        print(f"[TRADE] Negotiation started: {a.name} <-> {b.name} (tick {tick})")
 
         # Alternate turns: A starts.
         for round_idx in range(1, self.max_rounds + 1):
@@ -253,9 +266,18 @@ class DialogueTradeSystem:
             )
 
             recent_transcript = "\n".join(transcript[-6:]) if transcript else "(No previous message)"
-            partner_last_public_offer = (
-                pending_offer_public_text if pending_offer_from == listener.agent_id else "(None)"
-            )
+            partner_last_public_offer = pending_offer_public_text if pending_offer_from == listener.agent_id else "(None)"
+            if pending_offer is not None and pending_offer_from == listener.agent_id:
+                give_i = self._safe_int_pair(pending_offer.get("give") or {})
+                receive_i = self._safe_int_pair(pending_offer.get("receive") or {})
+                if not self.env.config.enable_spice:
+                    give_i["spice"] = 0
+                    receive_i["spice"] = 0
+                partner_last_public_offer = (
+                    f"{pending_offer_public_text}\n"
+                    f"Interpretation for YOU: If you ACCEPT, you RECEIVE {give_i} and you MUST GIVE {receive_i}.\n"
+                    f"To accept honestly, set private_execute_give = {receive_i}."
+                )
 
             memory_summary = self._format_partner_memory(speaker, listener)
             turn_prompt = build_sugarscape_trade_turn_prompt(
@@ -275,6 +297,25 @@ class DialogueTradeSystem:
 
             parsed = self._parse_trade_reply(reply_text)
             transcript.append(f"{speaker.name}: {parsed.say}")
+            
+            # Store full conversation in both agents' history
+            trade_turn = {
+                "type": "trade_dialogue",
+                "tick": tick,
+                "round": round_idx,
+                "speaker": speaker.name,
+                "partner": listener.name,
+                "prompt": turn_prompt,
+                "response": reply_text,
+                "intent": parsed.intent,
+                "public_offer": parsed.public_offer if parsed.intent == "OFFER" else None,
+            }
+            full_conversation.append(trade_turn)
+            
+            # Append to agents' conversation history if they have one
+            if hasattr(speaker, 'conversation_history'):
+                speaker.conversation_history.append({"role": "user", "content": f"[TRADE with {listener.name}] {turn_prompt}"})
+                speaker.conversation_history.append({"role": "assistant", "content": reply_text})
 
             if parsed.intent == "OFFER":
                 pending_offer = parsed.public_offer
@@ -284,7 +325,8 @@ class DialogueTradeSystem:
                 continue
 
             if parsed.intent in {"REJECT", "WALK_AWAY"}:
-                self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer)
+                print(f"[TRADE] {speaker.name} {parsed.intent}ed negotiation with {listener.name}")
+                self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer, conversation=full_conversation)
                 return
 
             if parsed.intent == "ACCEPT":
@@ -302,11 +344,22 @@ class DialogueTradeSystem:
                     offerer_execute = (pending_offer or {}).get("give", {"sugar": 0, "spice": 0})
                     acceptor_execute = (pending_offer or {}).get("receive", {"sugar": 0, "spice": 0})
 
+                # Heuristic guardrail: many models confuse `private_execute_give` direction on ACCEPT and
+                # accidentally provide what they expect to RECEIVE (i.e., partner's `give`), not what they will SEND.
+                # If it looks like that specific confusion pattern, correct to contract-required acceptor give.
+                if self.allow_fraud and pending_offer is not None:
+                    acceptor_execute = self._fix_accept_execute_direction_confusion(
+                        acceptor_execute=acceptor_execute,
+                        contract_offer_give=(pending_offer or {}).get("give", {}),
+                        contract_offer_receive=(pending_offer or {}).get("receive", {}),
+                    )
+
                 offerer_sent = self._clamp_give_to_inventory(offerer, offerer_execute)
                 acceptor_sent = self._clamp_give_to_inventory(acceptor, acceptor_execute)
 
                 self._apply_transfer(offerer, acceptor, offerer_sent, acceptor_sent)
 
+                print(f"[TRADE] Trade completed: {offerer.name} sent {offerer_sent}, {acceptor.name} sent {acceptor_sent}")
                 self._record_trade(
                     offerer=offerer,
                     acceptor=acceptor,
@@ -314,10 +367,12 @@ class DialogueTradeSystem:
                     public_contract=pending_offer,
                     offerer_sent=offerer_sent,
                     acceptor_sent=acceptor_sent,
+                    conversation=full_conversation,
                 )
                 return
 
-        self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer)
+        print(f"[TRADE] Negotiation timed out: {a.name} <-> {b.name}")
+        self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer, conversation=full_conversation)
 
     def _clamp_give_to_inventory(self, agent: SugarAgent, give: Dict[str, int]) -> Dict[str, int]:
         sugar = max(0, int(give.get("sugar", 0)))
@@ -353,6 +408,7 @@ class DialogueTradeSystem:
         public_contract: Dict[str, Dict[str, int]],
         offerer_sent: Dict[str, int],
         acceptor_sent: Dict[str, int],
+        conversation: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         contract_offer_give = public_contract.get("give", {"sugar": 0, "spice": 0})
         contract_offer_receive = public_contract.get("receive", {"sugar": 0, "spice": 0})
@@ -370,6 +426,7 @@ class DialogueTradeSystem:
                 "receive": self._safe_int_pair(contract_offer_receive),
             },
             "actual": {"sent": offerer_sent, "received": offerer_received},
+            "conversation": conversation or [],
         }
         acceptor_event = {
             "tick": tick,
@@ -381,6 +438,7 @@ class DialogueTradeSystem:
                 "receive": self._safe_int_pair(contract_offer_give),
             },
             "actual": {"sent": acceptor_sent, "received": acceptor_received},
+            "conversation": conversation or [],
         }
 
         offerer.get_partner_trade_log(acceptor.agent_id, maxlen=self.memory_maxlen).append(offerer_event)
@@ -406,6 +464,7 @@ class DialogueTradeSystem:
         tick: int,
         outcome: str,
         pending_offer: Optional[Dict[str, Dict[str, int]]],
+        conversation: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         pending = pending_offer or {"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}}
         a.get_partner_trade_log(b.agent_id, maxlen=self.memory_maxlen).append(
@@ -416,6 +475,7 @@ class DialogueTradeSystem:
                 "type": "NO_TRADE",
                 "outcome": outcome,
                 "pending_offer": pending,
+                "conversation": conversation or [],
             }
         )
         b.get_partner_trade_log(a.agent_id, maxlen=self.memory_maxlen).append(
@@ -426,6 +486,7 @@ class DialogueTradeSystem:
                 "type": "NO_TRADE",
                 "outcome": outcome,
                 "pending_offer": pending,
+                "conversation": conversation or [],
             }
         )
 
@@ -490,6 +551,36 @@ class DialogueTradeSystem:
 
     def _safe_int_pair(self, d: Dict[str, Any]) -> Dict[str, int]:
         return {"sugar": max(0, int(d.get("sugar", 0) or 0)), "spice": max(0, int(d.get("spice", 0) or 0))}
+
+    def _fix_accept_execute_direction_confusion(
+        self,
+        acceptor_execute: Dict[str, int],
+        contract_offer_give: Dict[str, Any],
+        contract_offer_receive: Dict[str, Any],
+    ) -> Dict[str, int]:
+        """Best-effort correction for a common LLM mistake on ACCEPT:
+
+        The acceptor sets `private_execute_give` to the partner's *give* (what acceptor would receive),
+        instead of the partner's *receive* (what acceptor must give). This yields nonsense trades like
+        both sides sending the same resource.
+
+        We only correct when it exactly matches the confusion signature; otherwise, keep as-is.
+        """
+        exec_i = self._safe_int_pair(acceptor_execute or {})
+        offer_give_i = self._safe_int_pair(contract_offer_give or {})
+        offer_recv_i = self._safe_int_pair(contract_offer_receive or {})
+
+        if not self.env.config.enable_spice:
+            exec_i["spice"] = 0
+            offer_give_i["spice"] = 0
+            offer_recv_i["spice"] = 0
+
+        if exec_i == offer_give_i and exec_i != offer_recv_i:
+            # Only correct if there is something non-zero to pay in the contract.
+            if (offer_recv_i.get("sugar", 0) + offer_recv_i.get("spice", 0)) > 0:
+                return offer_recv_i
+
+        return exec_i
 
     def _parse_trade_reply(self, reply_text: str) -> _ParsedTradeReply:
         prefix_text, obj = self._extract_json(reply_text)
@@ -587,6 +678,16 @@ class DialogueTradeSystem:
         say = " ".join(say_lines).strip()
         return thought, say
 
+    def _fix_json_keys(self, text: str) -> str:
+        """Fix common LLM JSON mistakes: unquoted keys and string values."""
+        import re
+        # Step 1: Fix unquoted keys like {sugar: -> {"sugar":
+        fixed = re.sub(r'([{,]\s*)(\w+)(\s*:)', r'\1"\2"\3', text)
+        # Step 2: Fix unquoted string values like : OFFER, -> : "OFFER",
+        # Match : followed by unquoted word (not a number) followed by , or } or newline
+        fixed = re.sub(r'(:\s*)([A-Za-z_][A-Za-z_0-9]*)(\s*[,}\n])', r'\1"\2"\3', fixed)
+        return fixed
+
     def _extract_json(self, text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         if not text:
             return "", None
@@ -595,6 +696,8 @@ class DialogueTradeSystem:
         starts = [i for i, ch in enumerate(text) if ch == "{"]
 
         best: Optional[Tuple[int, int, Dict[str, Any]]] = None  # (start, end_abs, obj)
+        
+        # Try original text first
         for i in starts:
             try:
                 obj, end = decoder.raw_decode(text[i:])
@@ -606,6 +709,25 @@ class DialogueTradeSystem:
             # Prefer the parse that consumes the most characters (outermost object).
             if best is None or end_abs > best[1]:
                 best = (i, end_abs, obj)
+
+        # If no valid JSON found, try fixing common LLM mistakes
+        if best is None:
+            fixed_text = self._fix_json_keys(text)
+            fixed_starts = [i for i, ch in enumerate(fixed_text) if ch == "{"]
+            for i in fixed_starts:
+                try:
+                    obj, end = decoder.raw_decode(fixed_text[i:])
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                end_abs = i + end
+                if best is None or end_abs > best[1]:
+                    best = (i, end_abs, obj)
+            
+            if best is not None:
+                # Use fixed text for extracting prefix/tail
+                text = fixed_text
 
         if best is None:
             return text.strip(), None

@@ -6,11 +6,21 @@ from openai import AsyncOpenAI
 
 API_KEY = "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"
 
-# Models with thinking/reasoning capabilities
+# Verified thinking/reasoning models on OpenRouter (all tested working)
 MODELS = {
-    "qwen": "qwen/qwen3-vl-235b-a22b-thinking",
-    "openai": "openai/gpt-5.1",
-    "kimi": "moonshotai/kimi-k2-thinking",
+    # Primary models for experiments
+    "kimi-k2": "moonshotai/kimi-k2-thinking",
+    "qwen-30b": "qwen/qwen3-30b-a3b-thinking-2507",
+
+    # Additional verified thinking models
+    "qwen-235b": "qwen/qwen3-vl-235b-a22b-thinking",
+    "qwen-8b": "qwen/qwen3-vl-8b-thinking",
+    "qwen-80b": "qwen/qwen3-next-80b-a3b-thinking",
+    "ernie": "baidu/ernie-4.5-21b-a3b-thinking",
+    "glm": "thudm/glm-4.1v-9b-thinking",
+
+    # Non-thinking models (for comparison)
+    "gpt-5.1": "openai/gpt-5.1",
     "gemini": "google/gemini-3-pro-preview",
 }
 
