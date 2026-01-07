@@ -172,6 +172,10 @@ class DialogueTradeSystem:
         self.max_rounds = max(1, int(max_rounds))
         self.allow_fraud = bool(allow_fraud)
         self.memory_maxlen = max(1, int(memory_maxlen))
+        # Prompt-first robustness controls (configured via env.config)
+        self.repair_json = bool(getattr(env.config, "trade_dialogue_repair_json", True))
+        self.repair_attempts = max(0, int(getattr(env.config, "trade_dialogue_repair_attempts", 1)))
+        self.coerce_protocol = bool(getattr(env.config, "trade_dialogue_coerce_protocol", False))
 
     def execute_trade_round(self, agents: List[SugarAgent], tick: Optional[int] = None):
         import random
@@ -296,6 +300,31 @@ class DialogueTradeSystem:
             )
 
             parsed = self._parse_trade_reply(reply_text)
+
+            # Prompt-first fix: if the model didn't produce valid/actionable JSON, ask it to restate JSON only.
+            if self.repair_json and self.repair_attempts > 0:
+                parsed = await self._repair_trade_reply_if_needed(
+                    parsed=parsed,
+                    speaker=speaker,
+                    listener=listener,
+                    round_idx=round_idx,
+                    max_rounds=self.max_rounds,
+                    pending_offer=pending_offer,
+                    pending_offer_from=pending_offer_from,
+                    system_prompt=system_prompt,
+                )
+
+            # Optional last-resort fallback: coerce protocol to prevent TIMEOUT.
+            if self.coerce_protocol:
+                parsed = self._coerce_trade_reply(
+                    parsed=parsed,
+                    speaker=speaker,
+                    listener=listener,
+                    round_idx=round_idx,
+                    max_rounds=self.max_rounds,
+                    pending_offer=pending_offer,
+                    pending_offer_from=pending_offer_from,
+                )
             transcript.append(f"{speaker.name}: {parsed.say}")
             
             # Store full conversation in both agents' history
@@ -373,6 +402,230 @@ class DialogueTradeSystem:
 
         print(f"[TRADE] Negotiation timed out: {a.name} <-> {b.name}")
         self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer, conversation=full_conversation)
+
+    async def _repair_trade_reply_if_needed(
+        self,
+        parsed: _ParsedTradeReply,
+        speaker: SugarAgent,
+        listener: SugarAgent,
+        round_idx: int,
+        max_rounds: int,
+        pending_offer: Optional[Dict[str, Dict[str, int]]],
+        pending_offer_from: Optional[int],
+        system_prompt: str,
+    ) -> _ParsedTradeReply:
+        """If the reply isn't actionable, ask the model to output ONLY valid JSON (no prose)."""
+        intent = (parsed.intent or "CHAT").strip().upper()
+        has_active_offer_from_listener = pending_offer is not None and pending_offer_from == listener.agent_id
+
+        # When should we repair?
+        # - model replied CHAT when we *need* an OFFER or ACCEPT/REJECT
+        # - model replied ACCEPT but there is no active offer from listener
+        needs_offer = (not has_active_offer_from_listener) and intent != "OFFER"
+        needs_decision = has_active_offer_from_listener and intent not in {"ACCEPT", "REJECT", "WALK_AWAY"}
+        bad_accept = intent == "ACCEPT" and not has_active_offer_from_listener
+
+        if not (needs_offer or needs_decision or bad_accept):
+            return parsed
+
+        # Build a short corrective prompt; keep it minimal to reduce token waste.
+        offer_context = "(None)"
+        if pending_offer is not None and pending_offer_from == listener.agent_id:
+            give_i = self._safe_int_pair(pending_offer.get("give") or {})
+            recv_i = self._safe_int_pair(pending_offer.get("receive") or {})
+            if not self.env.config.enable_spice:
+                give_i["spice"] = 0
+                recv_i["spice"] = 0
+            offer_context = (
+                f"Active offer from {listener.name}: give={give_i}, receive={recv_i}. "
+                f"If you ACCEPT honestly, you must SEND receive={recv_i}."
+            )
+
+        repair_prompt = (
+            "Your previous message did not follow the protocol.\n"
+            "Return ONLY a single valid JSON object matching this schema and nothing else:\n"
+            "{\n"
+            '  \"intent\": \"OFFER\" | \"ACCEPT\" | \"REJECT\" | \"WALK_AWAY\",\n'
+            '  \"public_offer\": {\"give\": {\"sugar\": int, \"spice\": int}, \"receive\": {\"sugar\": int, \"spice\": int}},\n'
+            '  \"private_execute_give\": {\"sugar\": int, \"spice\": int}\n'
+            "}\n"
+            f"Round {round_idx} of {max_rounds}. {offer_context}\n"
+            "Rules:\n"
+            "- If there is an active offer, choose ACCEPT or REJECT (or WALK_AWAY).\n"
+            "- If there is no active offer, choose OFFER (or WALK_AWAY).\n"
+            "- If intent != OFFER, set public_offer give/receive to 0.\n"
+            "- private_execute_give is what YOU SEND.\n"
+        )
+
+        # Try a small number of times (usually 1 is enough).
+        for _ in range(self.repair_attempts):
+            try:
+                reply_text = await speaker.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": repair_prompt}],
+                )
+            except Exception:
+                break
+            repaired = self._parse_trade_reply(reply_text)
+            repaired_intent = (repaired.intent or "CHAT").strip().upper()
+            if has_active_offer_from_listener:
+                if repaired_intent in {"ACCEPT", "REJECT", "WALK_AWAY"}:
+                    return repaired
+            else:
+                if repaired_intent in {"OFFER", "WALK_AWAY"}:
+                    return repaired
+
+        return parsed
+
+    def _coerce_trade_reply(
+        self,
+        parsed: _ParsedTradeReply,
+        speaker: SugarAgent,
+        listener: SugarAgent,
+        round_idx: int,
+        max_rounds: int,
+        pending_offer: Optional[Dict[str, Dict[str, int]]],
+        pending_offer_from: Optional[int],
+    ) -> _ParsedTradeReply:
+        """Guardrail against 'analysis paralysis' / malformed replies.
+
+        Many models sometimes output intent=CHAT (or omit JSON) even when the protocol demands
+        OFFER/ACCEPT/REJECT. In this simulation, CHAT is a no-op and leads to TIMEOUT.
+
+        Policy:
+        - If there's an active offer from the *listener*, force ACCEPT or REJECT.
+        - If there is no active offer, force OFFER (or WALK_AWAY on final round if we truly can't make one).
+        """
+        intent = (parsed.intent or "CHAT").strip().upper()
+
+        has_active_offer_from_listener = (
+            pending_offer is not None and pending_offer_from == listener.agent_id
+        )
+
+        if has_active_offer_from_listener:
+            # Coerce to ACCEPT/REJECT based on whether honest acceptance is welfare-improving.
+            if intent not in {"ACCEPT", "REJECT", "WALK_AWAY"}:
+                intent = "ACCEPT" if self._should_accept_offer(speaker, pending_offer) else "REJECT"
+        else:
+            # No active offer: ensure we make an offer rather than chatting ourselves into TIMEOUT.
+            if intent not in {"OFFER", "WALK_AWAY"}:
+                intent = "OFFER"
+
+        if intent == "OFFER":
+            offer = self._default_public_offer(speaker)
+            exec_give = self._safe_int_pair(offer.get("give") or {})
+            if not self.env.config.enable_spice:
+                exec_give["spice"] = 0
+            return _ParsedTradeReply(
+                thought=parsed.thought,
+                say=parsed.say or "Proposing a simple trade to rebalance resources.",
+                intent="OFFER",
+                public_offer=offer,
+                private_execute_give=exec_give,
+            )
+
+        if intent == "ACCEPT" and has_active_offer_from_listener and pending_offer is not None:
+            # On ACCEPT, private_execute_give should be what speaker SENDS.
+            # If fraud disabled, later code will enforce contract; if fraud enabled, this is an honest default.
+            to_send = self._safe_int_pair((pending_offer.get("receive") or {}))
+            if not self.env.config.enable_spice:
+                to_send["spice"] = 0
+            return _ParsedTradeReply(
+                thought=parsed.thought,
+                say=parsed.say or "I accept your offer.",
+                intent="ACCEPT",
+                public_offer={"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}},
+                private_execute_give=to_send,
+            )
+
+        if intent in {"REJECT", "WALK_AWAY"}:
+            return _ParsedTradeReply(
+                thought=parsed.thought,
+                say=parsed.say or ("I reject." if intent == "REJECT" else "No deal."),
+                intent=intent,
+                public_offer={"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}},
+                private_execute_give={"sugar": 0, "spice": 0},
+            )
+
+        # Fallback: keep original.
+        return parsed
+
+    def _should_accept_offer(self, agent: SugarAgent, offer: Dict[str, Dict[str, int]]) -> bool:
+        """Decide whether to accept an offer assuming honest execution (Pareto-like for self)."""
+        give_to_me = self._safe_int_pair((offer.get("give") or {}))
+        i_send = self._safe_int_pair((offer.get("receive") or {}))
+        if not self.env.config.enable_spice:
+            give_to_me["spice"] = 0
+            i_send["spice"] = 0
+
+        # Must be affordable to be meaningful.
+        if i_send["sugar"] > int(agent.wealth):
+            return False
+        if self.env.config.enable_spice and i_send["spice"] > int(agent.spice):
+            return False
+
+        w0 = self._calc_welfare(agent, float(agent.wealth), float(agent.spice))
+        w1 = self._calc_welfare(
+            agent,
+            float(agent.wealth - i_send["sugar"] + give_to_me["sugar"]),
+            float(agent.spice - i_send["spice"] + give_to_me["spice"]),
+        )
+        # Accept if it doesn't hurt and provides a meaningful improvement.
+        return w1 >= w0 * 1.0001
+
+    def _calc_welfare(self, agent: SugarAgent, sugar: float, spice: float) -> float:
+        sugar = max(0.0, float(sugar))
+        spice = max(0.0, float(spice))
+        if not self.env.config.enable_spice or agent.metabolism_spice <= 0:
+            return sugar
+        m_s = max(0.0, float(agent.metabolism))
+        m_p = max(0.0, float(agent.metabolism_spice))
+        m_t = max(1e-9, m_s + m_p)
+        # Cobb-Douglas welfare used elsewhere in this module.
+        return (sugar ** (m_s / m_t)) * (spice ** (m_p / m_t))
+
+    def _default_public_offer(self, agent: SugarAgent) -> Dict[str, Dict[str, int]]:
+        """Generate a simple, safe offer based only on self state (no opponent peeking)."""
+        sugar = int(agent.wealth)
+        spice = int(agent.spice)
+
+        # Target buffer: ~10 timesteps for each required resource (if metabolism > 0).
+        sugar_target = int(max(0, agent.metabolism) * 10) if agent.metabolism > 0 else 0
+        spice_target = int(max(0, agent.metabolism_spice) * 10) if agent.metabolism_spice > 0 else 0
+
+        sugar_need = max(0, sugar_target - sugar) if sugar_target else 0
+        spice_need = max(0, spice_target - spice) if (self.env.config.enable_spice and spice_target) else 0
+
+        # Choose what to ask for.
+        want_spice = self.env.config.enable_spice and (spice_need > sugar_need)
+
+        if want_spice:
+            # Give sugar for spice.
+            give_sugar = max(1, min(10, sugar // 5)) if sugar > 0 else 0
+            receive_spice = max(1, min(10, (spice_need if spice_need > 0 else 2 * give_sugar)))
+            offer = {
+                "give": {"sugar": give_sugar, "spice": 0},
+                "receive": {"sugar": 0, "spice": receive_spice},
+            }
+        else:
+            # Give spice for sugar (or if spice disabled, give nothing and ask sugar is meaningless; fall back to walk away).
+            if not self.env.config.enable_spice:
+                offer = {"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 1, "spice": 0}}
+            else:
+                give_spice = max(1, min(10, spice // 5)) if spice > 0 else 0
+                receive_sugar = max(1, min(10, (sugar_need if sugar_need > 0 else 2 * give_spice)))
+                offer = {
+                    "give": {"sugar": 0, "spice": give_spice},
+                    "receive": {"sugar": receive_sugar, "spice": 0},
+                }
+
+        # Ensure ints and non-negative.
+        give_i = self._safe_int_pair(offer.get("give") or {})
+        recv_i = self._safe_int_pair(offer.get("receive") or {})
+        if not self.env.config.enable_spice:
+            give_i["spice"] = 0
+            recv_i["spice"] = 0
+        return {"give": give_i, "receive": recv_i}
 
     def _clamp_give_to_inventory(self, agent: SugarAgent, give: Dict[str, int]) -> Dict[str, int]:
         sugar = max(0, int(give.get("sugar", 0)))
@@ -583,7 +836,9 @@ class DialogueTradeSystem:
         return exec_i
 
     def _parse_trade_reply(self, reply_text: str) -> _ParsedTradeReply:
-        prefix_text, obj = self._extract_json(reply_text)
+        # Strip thinking blocks (from thinking models like Qwen/DeepSeek) before parsing.
+        cleaned = self._strip_thinking_blocks(reply_text)
+        prefix_text, obj = self._extract_json(cleaned)
         thought, say = self._split_thought_and_say(prefix_text)
         if not isinstance(obj, dict):
             return _ParsedTradeReply(
@@ -687,6 +942,15 @@ class DialogueTradeSystem:
         # Match : followed by unquoted word (not a number) followed by , or } or newline
         fixed = re.sub(r'(:\s*)([A-Za-z_][A-Za-z_0-9]*)(\s*[,}\n])', r'\1"\2"\3', fixed)
         return fixed
+
+    def _strip_thinking_blocks(self, text: str) -> str:
+        """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models."""
+        import re
+        # Remove entire thinking blocks (greedy, handles multiline)
+        cleaned = re.sub(r'__THINKING_START__.*?__THINKING_END__', '', text, flags=re.DOTALL)
+        # Also handle unclosed thinking blocks (model may be cut off)
+        cleaned = re.sub(r'__THINKING_START__.*', '', cleaned, flags=re.DOTALL)
+        return cleaned.strip()
 
     def _extract_json(self, text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         if not text:

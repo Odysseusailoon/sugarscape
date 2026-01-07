@@ -202,26 +202,100 @@ class SugarSimulation:
             # but before other LLM agents' moves are applied.
             decisions = asyncio.run(get_decisions())
             
-            # Apply decisions
+            # Apply decisions with a batched collision policy for LLM agents:
+            # - Single occupancy per cell.
+            # - If multiple agents target the same cell, pick a winner uniformly at random (seeded RNG).
+            # - Allow moving into cells vacated by other LLM agents in the same batch; deny moves into
+            #   cells occupied by non-LLM agents (already moved in phase 1a).
+            desired: Dict[SugarAgent, Any] = {}
+            decision_by_agent: Dict[SugarAgent, Dict[str, Any]] = {}
+
             for agent, decision_data in zip(llm_agents, decisions):
                 if isinstance(decision_data, Exception):
                     print(f"Agent {agent.agent_id} failed: {decision_data}")
                     continue
-                
-                # decision_data is a dict with details
                 if not isinstance(decision_data, dict):
-                    # Should not happen with updated LLMAgent, but safety check
                     continue
+                decision_by_agent[agent] = decision_data
+                desired[agent] = decision_data.get("parsed_move")
 
-                target_pos = decision_data.get("parsed_move")
-                
-                if target_pos:
-                    # Verify occupancy again (collision resolution)
-                    if not self.env.is_occupied(target_pos):
-                        self.env.move_agent(agent, target_pos)
-                    # If occupied, stay put (simple resolution)
-                
-                # Harvest + metrics update (metabolism/aging happens later, after trade)
+            # Positions occupied by non-LLM alive agents are immutable for this batch.
+            llm_set = set(llm_agents)
+            occupied_by_non_llm = {
+                pos for pos, occ in self.env.grid_agents.items()
+                if (occ is not None) and (occ.alive) and (occ not in llm_set)
+            }
+
+            # Step 1: resolve "many want same target" with a fair tie-break.
+            targets: Dict[Any, List[SugarAgent]] = {}
+            for agent, tpos in desired.items():
+                if tpos is None:
+                    continue
+                targets.setdefault(tpos, []).append(agent)
+
+            winners: Dict[SugarAgent, Any] = {}
+            for tpos, agents_wanting in targets.items():
+                if len(agents_wanting) == 1:
+                    winners[agents_wanting[0]] = tpos
+                else:
+                    winner = self.rng.choice(agents_wanting)
+                    winners[winner] = tpos
+
+            # Step 2: propose final positions (winners move, others stay).
+            old_pos: Dict[SugarAgent, Any] = {a: a.pos for a in llm_agents}
+            final_pos: Dict[SugarAgent, Any] = {a: old_pos[a] for a in llm_agents}
+            for a, tpos in winners.items():
+                if tpos is not None:
+                    final_pos[a] = tpos
+
+            # Step 3: enforce single occupancy against *stayers* and non-LLM occupied cells.
+            # Iteratively revert invalid movers until stable.
+            for _ in range(max(1, len(llm_agents))):
+                changed = False
+
+                # Cannot move into a non-LLM occupied cell.
+                for a, tpos in list(final_pos.items()):
+                    if tpos in occupied_by_non_llm and tpos != old_pos[a]:
+                        final_pos[a] = old_pos[a]
+                        changed = True
+
+                # Resolve duplicates among LLM final positions (e.g., moving into a stayer's cell).
+                rev: Dict[Any, List[SugarAgent]] = {}
+                for a, tpos in final_pos.items():
+                    rev.setdefault(tpos, []).append(a)
+
+                for tpos, agents_here in rev.items():
+                    if len(agents_here) <= 1:
+                        continue
+                    # Prefer keeping the agent whose original position is this cell (a "stayer"/rightful occupant).
+                    rightful = [a for a in agents_here if old_pos[a] == tpos]
+                    if rightful:
+                        keep = rightful[0]
+                    else:
+                        keep = self.rng.choice(agents_here)
+                    for a in agents_here:
+                        if a is keep:
+                            continue
+                        final_pos[a] = old_pos[a]
+                        changed = True
+
+                if not changed:
+                    break
+
+            # Step 4: apply batched moves by rebuilding the env grid mapping for these agents.
+            for a in llm_agents:
+                # Remove old mapping if present.
+                if self.env.grid_agents.get(old_pos[a]) == a:
+                    del self.env.grid_agents[old_pos[a]]
+            for a in llm_agents:
+                a.pos = final_pos[a]
+                self.env.grid_agents[a.pos] = a
+
+            # Step 5: harvest + metrics update per agent (after movement is finalized)
+            for agent in llm_agents:
+                decision_data = decision_by_agent.get(agent, {})
+                target_pos = desired.get(agent)
+
                 rewards = agent._harvest_and_update_metrics(self.env)
                 
                 # Record move history for LLM agents

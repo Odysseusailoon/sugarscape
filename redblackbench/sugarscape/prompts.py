@@ -185,12 +185,11 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
         else:
             occupancy = ""
         
-        # Spice description
+        # Spice description (always show, including 0, so agents can learn gradients/peaks)
         spice_desc = ""
         if env.config.enable_spice:
             spice_amt = env.get_spice_at(pos)
-            if spice_amt > 0:
-                spice_desc = f", {describe_resource_amount(spice_amt, 'Spice')}"
+            spice_desc = f", {describe_resource_amount(spice_amt, 'Spice')}"
         
         obs_lines.append(f"  • {direction}: {sugar_desc}{spice_desc}{occupancy}")
     
@@ -267,6 +266,9 @@ You have encountered another agent. You may negotiate resource exchange (Sugar a
 - Trade execution occurs when one agent makes an OFFER and the other responds with ACCEPT.
 - Either agent may end negotiation at any point.
  - **Anti-timeout rule:** Do NOT waste the final round with small talk. If there is an active offer, choose ACCEPT or REJECT. If there is no active offer, either make an OFFER or WALK_AWAY.
+ - **Protocol strictness:** Avoid `intent="CHAT"` during the negotiation. Use:
+   - `OFFER` when there is no active offer.
+   - `ACCEPT` or `REJECT` (or `WALK_AWAY`) when there is an active offer.
 
 # Resource Constraints
 

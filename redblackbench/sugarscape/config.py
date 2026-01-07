@@ -25,6 +25,12 @@ class SugarscapeConfig:
     trade_dialogue_rounds: int = 4
     trade_allow_fraud: bool = True
     trade_memory_maxlen: int = 50
+    # Dialogue trade robustness:
+    # - repair: attempt a prompt-based "output JSON only" retry if parsing fails or intent is invalid
+    # - coerce: (optional) hard fallback to OFFER/ACCEPT/REJECT to avoid TIMEOUT
+    trade_dialogue_repair_json: bool = True
+    trade_dialogue_repair_attempts: int = 1
+    trade_dialogue_coerce_protocol: bool = False
     
     # Personas (Optional)
     enable_personas: bool = False
