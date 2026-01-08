@@ -28,9 +28,13 @@ class SugarscapeConfig:
     # Dialogue trade robustness:
     # - repair: attempt a prompt-based "output JSON only" retry if parsing fails or intent is invalid
     # - coerce: (optional) hard fallback to OFFER/ACCEPT/REJECT to avoid TIMEOUT
+    # - two_stage: use thinking model for reasoning, then non-thinking for JSON output
     trade_dialogue_repair_json: bool = True
     trade_dialogue_repair_attempts: int = 1
     trade_dialogue_coerce_protocol: bool = False
+    trade_dialogue_two_stage: bool = True  # Default on: thinking → JSON pipeline
+    trade_dialogue_thinking_tokens: int = 1024  # Tokens for Stage 1 (thinking)
+    trade_dialogue_json_tokens: int = 512  # Tokens for Stage 2 (JSON output)
     
     # Personas (Optional)
     enable_personas: bool = False

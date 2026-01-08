@@ -176,6 +176,10 @@ class DialogueTradeSystem:
         self.repair_json = bool(getattr(env.config, "trade_dialogue_repair_json", True))
         self.repair_attempts = max(0, int(getattr(env.config, "trade_dialogue_repair_attempts", 1)))
         self.coerce_protocol = bool(getattr(env.config, "trade_dialogue_coerce_protocol", False))
+        # Two-stage mode: thinking → JSON pipeline
+        self.two_stage = bool(getattr(env.config, "trade_dialogue_two_stage", True))
+        self.thinking_tokens = int(getattr(env.config, "trade_dialogue_thinking_tokens", 1024))
+        self.json_tokens = int(getattr(env.config, "trade_dialogue_json_tokens", 512))
 
     def execute_trade_round(self, agents: List[SugarAgent], tick: Optional[int] = None):
         import random
@@ -294,25 +298,38 @@ class DialogueTradeSystem:
                 partner_memory_summary=memory_summary,
             )
 
-            reply_text = await speaker.provider.generate(
-                system_prompt=system_prompt,
-                messages=[{"role": "user", "content": turn_prompt}],
-            )
-
-            parsed = self._parse_trade_reply(reply_text)
-
-            # Prompt-first fix: if the model didn't produce valid/actionable JSON, ask it to restate JSON only.
-            if self.repair_json and self.repair_attempts > 0:
-                parsed = await self._repair_trade_reply_if_needed(
-                    parsed=parsed,
+            # Two-stage mode: Stage 1 (thinking) → Stage 2 (JSON output)
+            if self.two_stage:
+                reply_text, parsed = await self._two_stage_generate(
                     speaker=speaker,
                     listener=listener,
+                    system_prompt=system_prompt,
+                    turn_prompt=turn_prompt,
                     round_idx=round_idx,
                     max_rounds=self.max_rounds,
                     pending_offer=pending_offer,
                     pending_offer_from=pending_offer_from,
-                    system_prompt=system_prompt,
                 )
+            else:
+                # Single-stage: original behavior
+                reply_text = await speaker.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": turn_prompt}],
+                )
+                parsed = self._parse_trade_reply(reply_text)
+
+                # Prompt-first fix: if the model didn't produce valid/actionable JSON, ask it to restate JSON only.
+                if self.repair_json and self.repair_attempts > 0:
+                    parsed = await self._repair_trade_reply_if_needed(
+                        parsed=parsed,
+                        speaker=speaker,
+                        listener=listener,
+                        round_idx=round_idx,
+                        max_rounds=self.max_rounds,
+                        pending_offer=pending_offer,
+                        pending_offer_from=pending_offer_from,
+                        system_prompt=system_prompt,
+                    )
 
             # Optional last-resort fallback: coerce protocol to prevent TIMEOUT.
             if self.coerce_protocol:
@@ -402,6 +419,108 @@ class DialogueTradeSystem:
 
         print(f"[TRADE] Negotiation timed out: {a.name} <-> {b.name}")
         self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer, conversation=full_conversation)
+
+    async def _two_stage_generate(
+        self,
+        speaker: SugarAgent,
+        listener: SugarAgent,
+        system_prompt: str,
+        turn_prompt: str,
+        round_idx: int,
+        max_rounds: int,
+        pending_offer: Optional[Dict[str, Dict[str, int]]],
+        pending_offer_from: Optional[int],
+    ) -> Tuple[str, "_ParsedTradeReply"]:
+        """Two-stage generation: Stage 1 (thinking) → Stage 2 (JSON output).
+
+        Stage 1: Call model with thinking enabled to get reasoning.
+        Stage 2: Call model with reasoning as context, asking for JSON-only output.
+
+        Returns:
+            Tuple of (combined_reply_text, parsed_reply)
+        """
+        import re
+
+        # Stage 1: Get reasoning (with thinking tokens)
+        stage1_response = await speaker.provider.generate(
+            system_prompt=system_prompt,
+            messages=[{"role": "user", "content": turn_prompt}],
+        )
+
+        # Extract thinking content
+        thinking_match = re.search(
+            r'__THINKING_START__\s*(.*?)\s*__THINKING_END__',
+            stage1_response,
+            re.DOTALL
+        )
+        if thinking_match:
+            reasoning = thinking_match.group(1).strip()
+        else:
+            # No thinking block, use the whole response as reasoning
+            reasoning = stage1_response.strip()
+
+        # Try to parse JSON from Stage 1 first (maybe it completed successfully)
+        parsed = self._parse_trade_reply(stage1_response)
+        intent = (parsed.intent or "CHAT").strip().upper()
+
+        # Check if Stage 1 produced valid actionable intent
+        has_active_offer = pending_offer is not None and pending_offer_from == listener.agent_id
+        if has_active_offer:
+            valid_intents = {"ACCEPT", "REJECT", "WALK_AWAY"}
+        else:
+            valid_intents = {"OFFER", "WALK_AWAY"}
+
+        if intent in valid_intents:
+            # Stage 1 succeeded, no need for Stage 2
+            return stage1_response, parsed
+
+        # Stage 2: Ask for JSON-only output with reasoning as context
+        offer_context = "(None)"
+        if pending_offer is not None and pending_offer_from == listener.agent_id:
+            give_i = self._safe_int_pair(pending_offer.get("give") or {})
+            recv_i = self._safe_int_pair(pending_offer.get("receive") or {})
+            if not self.env.config.enable_spice:
+                give_i["spice"] = 0
+                recv_i["spice"] = 0
+            offer_context = (
+                f"Active offer from {listener.name}: give={give_i}, receive={recv_i}.\n"
+                f"If you ACCEPT honestly, you must SEND receive={recv_i}."
+            )
+
+        stage2_prompt = (
+            f"Your reasoning about this trade:\n{reasoning[:1500]}\n\n"
+            f"Round {round_idx} of {max_rounds}. {offer_context}\n\n"
+            "Based on your reasoning above, output ONLY a valid JSON object (no other text):\n"
+            "{\n"
+            '  "intent": "OFFER" | "ACCEPT" | "REJECT" | "WALK_AWAY",\n'
+            '  "public_offer": {"give": {"sugar": int, "spice": int}, "receive": {"sugar": int, "spice": int}},\n'
+            '  "private_execute_give": {"sugar": int, "spice": int}\n'
+            "}\n\n"
+            "Rules:\n"
+            "- If there is an active offer, choose ACCEPT or REJECT (or WALK_AWAY).\n"
+            "- If there is no active offer, choose OFFER (or WALK_AWAY).\n"
+            "- If intent != OFFER, set public_offer give/receive to 0.\n"
+            "- private_execute_give is what YOU SEND.\n"
+            "/no_think"  # Tell Qwen models to skip thinking for this call
+        )
+
+        # Stage 2 call
+        stage2_response = await speaker.provider.generate(
+            system_prompt="You are a trade decision assistant. Output only valid JSON.",
+            messages=[{"role": "user", "content": stage2_prompt}],
+        )
+
+        # Parse Stage 2 response
+        parsed2 = self._parse_trade_reply(stage2_response)
+        intent2 = (parsed2.intent or "CHAT").strip().upper()
+
+        if intent2 in valid_intents:
+            # Combine responses for logging
+            combined = f"[Stage 1 Reasoning]\n{reasoning[:500]}...\n\n[Stage 2 Decision]\n{stage2_response}"
+            return combined, parsed2
+
+        # Stage 2 also failed, return Stage 1 result (will likely cause TIMEOUT)
+        return stage1_response, parsed
 
     async def _repair_trade_reply_if_needed(
         self,
