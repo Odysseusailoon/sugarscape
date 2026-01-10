@@ -141,11 +141,19 @@ class SugarSimulation:
         if self.config.enable_llm_agents and self.llm_provider:
             if self.rng.random() < self.config.llm_agent_ratio:
                 use_llm = True
-                
+
         if use_llm:
+            # Select goal for this LLM agent
+            if self.config.enable_mixed_goals:
+                dist = self.config.llm_goal_distribution
+                goal_preset = self.rng.choices(list(dist.keys()), weights=list(dist.values()))[0]
+                goal_prompt = SugarscapeConfig.get_goal_prompt(goal_preset)
+            else:
+                goal_prompt = self.config.llm_goal_prompt
+
             agent = LLMSugarAgent(
                 provider=self.llm_provider,
-                goal_prompt=self.config.llm_goal_prompt,
+                goal_prompt=goal_prompt,
                 agent_id=self.next_agent_id,
                 pos=pos,
                 vision=v,

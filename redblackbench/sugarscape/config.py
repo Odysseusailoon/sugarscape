@@ -33,8 +33,8 @@ class SugarscapeConfig:
     trade_dialogue_repair_attempts: int = 1
     trade_dialogue_coerce_protocol: bool = False
     trade_dialogue_two_stage: bool = True  # Default on: thinking → JSON pipeline
-    trade_dialogue_thinking_tokens: int = 1024  # Tokens for Stage 1 (thinking)
-    trade_dialogue_json_tokens: int = 512  # Tokens for Stage 2 (JSON output)
+    trade_dialogue_thinking_tokens: int = 1024  # Tokens for Stage 1 (thinking) - keep high for quality
+    trade_dialogue_json_tokens: int = 128  # Tokens for Stage 2 (JSON output) - reduced, JSON is small
     
     # Personas (Optional)
     enable_personas: bool = False
@@ -74,45 +74,42 @@ class SugarscapeConfig:
     llm_goal_prompt: str = ""  # Will be set based on preset or custom input
     llm_history_limit: int = 15 # Number of recent steps to keep in history context (safe with 262K+ context models)
 
+    # Mixed Goals (Optional) - assign different goals to different LLM agents
+    enable_mixed_goals: bool = False  # When True, use llm_goal_distribution instead of single preset
+    llm_goal_distribution: Dict[str, float] = field(default_factory=lambda: {
+        "survival": 0.4,   # 40% survival-focused
+        "wealth": 0.3,     # 30% wealth-focused
+        "altruist": 0.2,   # 20% altruistic
+        "none": 0.1,       # 10% no explicit goal
+    })
+
     @staticmethod
     def get_goal_prompt(preset: str) -> str:
         """Get the goal prompt for a given preset."""
         goals = {
-            "none": """You are an agent in this world. Observe your situation and decide what to do.""",
+            "none": """You are a person living in this world. You decide what matters to you.""",
 
-            "survival": """Your main goal is to stay alive as long as possible. Secondarily, you want to accumulate as much food as you can.
+            "survival": """You want to live. Stay alive as long as you can.
+You need both Sugar and Spice - if either runs out, you die.
+When you're low on one, find it or trade for it.""",
 
-Staying alive means keeping enough food to avoid starvation. Think about both your immediate hunger and your long-term survival.""",
+            "wealth": """You want to be prosperous. Accumulate as much as you can.
+Both Sugar and Spice make you wealthy. The more you have of both, the better off you are.
+Seek abundance, but remember you need both to thrive.""",
 
-            "wealth": """Your goal is to accumulate as much food as possible (Sugar + Spice combined).
+            "altruist": """You care about others. You believe everyone deserves to live.
 
-You want to be rich in food resources. Focus on efficient food gathering and getting to the best locations. Staying alive is important mainly because you need to be alive to accumulate more food.""",
+When you see someone struggling - low on Sugar or Spice - you want to help them. When you have plenty and others have little, sharing feels right. You'd rather live modestly in a world where everyone survives than live richly while others starve.
 
-            "egalitarian": """You deeply care about fairness and equality. You believe everyone deserves a chance to survive. Your values are:
+In trades, you think about whether the other person needs this more than you. If they're desperate for Spice and you have extra, maybe give them a good deal.
 
-1. **Most Important:** Help ensure no one is left to starve. When you see someone struggling, you want to help them.
-2. **Also Important:** Keep yourself healthy enough to continue helping others.
-3. **Consider:** How your actions affect the overall fairness of food distribution among everyone.
-
-You value fair outcomes more than personal wealth.""",
-
-            "utilitarian": """You believe in doing what's best for everyone as a whole. You want to maximize the total well-being of all people. Your approach:
-
-1. **Most Important:** Take actions that increase the total food and well-being of everyone combined, even if it costs you personally.
-2. **Also Important:** Stay healthy enough to keep contributing to the greater good.
-3. **Consider:** The broader impact of your decisions on the entire community.
-
-You're willing to help others even at your own expense if it helps more people overall.""",
-
-            "samaritan": """Your goal is to help others by leaving resources for those who need them more. You should:
-
-1. **Primary:** When you have adequate resources, avoid consuming high-resource spots. Leave them for agents who are struggling.
-2. **Secondary:** Maintain minimal resources to survive so you can continue helping others.
-3. **Observe:** Pay attention to nearby agents who might be in critical condition (low survival time).
-4. **Spread out:** Avoid crowding to give others more space to find resources.
-
-Philosophy: True altruism means sacrificing personal gain for collective benefit. When you are affluent, let others take what they need. When you encounter struggling agents, help them access resources rather than competing."""
+You stay alive because you can do more good alive than dead.""",
         }
+
+        # Aliases for backward compatibility
+        goals["egalitarian"] = goals["altruist"]
+        goals["utilitarian"] = goals["altruist"]
+        goals["samaritan"] = goals["altruist"]
 
         if preset in goals:
             return goals[preset]

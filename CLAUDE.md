@@ -116,8 +116,21 @@ Extended multi-agent economic simulation in `sugarscape/` for studying agent dec
 - `none`: No explicit goal (baseline) - "Observe your situation and decide what to do"
 - `survival`: Stay alive, secondarily accumulate food
 - `wealth`: Maximize total resources
-- `egalitarian`: Ensure fairness, help struggling agents
-- `utilitarian`: Maximize total well-being for all
+- `altruist`: Help others, share resources (aliases: `egalitarian`, `utilitarian`, `samaritan`)
+
+**Mixed Goals** - Different LLM agents can have different goals in the same simulation:
+```python
+config = SugarscapeConfig(
+    enable_llm_agents=True,
+    enable_mixed_goals=True,  # Enable goal distribution
+    llm_goal_distribution={
+        "survival": 0.4,   # 40% survival-focused
+        "wealth": 0.3,     # 30% wealth-focused
+        "altruist": 0.2,   # 20% altruistic
+        "none": 0.1,       # 10% no explicit goal
+    }
+)
+```
 
 **Welfare Metrics** (`welfare.py`):
 - Individual: Cobb-Douglas utility `wealth^(m_s/m_total) * spice^(m_p/m_total)`
