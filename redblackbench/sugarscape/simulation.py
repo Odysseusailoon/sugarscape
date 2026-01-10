@@ -1,5 +1,7 @@
 import random
-from typing import List, Dict, Any
+import pickle
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Union
 import numpy as np
 
 from redblackbench.sugarscape.config import SugarscapeConfig
@@ -518,8 +520,236 @@ class SugarSimulation:
         n = len(values)
         total = sum(sorted_vals)
         if total == 0: return 0
-        
+
         # G = (2 * sum(i * xi) / (n * sum(xi))) - (n + 1) / n
         # where i is 1-based index
         weighted_sum = sum((i + 1) * val for i, val in enumerate(sorted_vals))
         return (2 * weighted_sum) / (n * total) - (n + 1) / n
+
+    # ========== Checkpoint System ==========
+
+    def save_checkpoint(self, filename: Optional[str] = None) -> Path:
+        """Save complete simulation state for later resumption.
+
+        Args:
+            filename: Optional custom filename. If None, uses tick number.
+
+        Returns:
+            Path to the saved checkpoint file.
+        """
+        checkpoint_data = {
+            # Simulation state
+            "tick": self.tick,
+            "next_agent_id": self.next_agent_id,
+            "initial_population": self.initial_population,
+            "rng_state": self.rng.getstate(),
+
+            # Config (serialized)
+            "config": self.config.__dict__.copy(),
+
+            # Name generator state
+            "name_generator_state": self.name_generator.get_state(),
+
+            # Environment state
+            "environment": self.env.get_checkpoint_state(),
+
+            # Agent states
+            "agents": [agent.to_checkpoint_dict() for agent in self.agents],
+
+            # Metadata
+            "experiment_id": self.logger.experiment_id,
+            "run_dir": str(self.logger.run_dir),
+        }
+
+        # Use logger's checkpoint save method
+        checkpoint_path = self.logger.save_checkpoint(checkpoint_data, self.tick)
+        print(f"Checkpoint saved: {checkpoint_path}")
+        return checkpoint_path
+
+    @classmethod
+    def load_checkpoint(cls, checkpoint_path: Union[str, Path]) -> "SugarSimulation":
+        """Restore simulation from a checkpoint file.
+
+        Args:
+            checkpoint_path: Path to the checkpoint .pkl file.
+
+        Returns:
+            Restored SugarSimulation instance ready to continue.
+        """
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        with open(checkpoint_path, 'rb') as f:
+            data = pickle.load(f)
+
+        # Reconstruct config
+        config = SugarscapeConfig(**data["config"])
+
+        # Create simulation instance (but skip normal initialization)
+        sim = object.__new__(cls)
+
+        # Restore config
+        sim.config = config
+
+        # Restore experiment logger - create new one in same directory structure
+        # We extract experiment name from the run_dir
+        run_dir = Path(data.get("run_dir", ""))
+        experiment_type = run_dir.parent.name if run_dir.parent else "resumed"
+
+        # Create logger pointing to same run directory
+        sim.logger = ExperimentLogger(
+            experiment_type=experiment_type,
+            config=config
+        )
+        # Override to use original experiment ID for consistency
+        # Note: This creates a NEW run dir, but we keep the experiment_id for tracking
+        original_experiment_id = data.get("experiment_id", sim.logger.experiment_id)
+
+        # Debug logger
+        sim.debug_logger = DebugLogger(
+            output_dir=sim.logger.run_dir / "debug",
+            enable_decisions=config.debug_log_decisions,
+            enable_llm_logs=config.debug_log_llm,
+            enable_trade_logs=config.debug_log_trades,
+            enable_death_logs=config.debug_log_deaths,
+            enable_efficiency_logs=config.debug_log_efficiency,
+        )
+
+        # Environment
+        sim.env = SugarEnvironment(config, debug_logger=sim.debug_logger)
+        sim.env.restore_checkpoint_state(data["environment"])
+
+        # Trade system
+        sim.trade_system = None
+        if config.enable_trade:
+            mode = (config.trade_mode or "mrs").strip().lower()
+            if mode == "dialogue":
+                sim.trade_system = DialogueTradeSystem(
+                    sim.env,
+                    max_rounds=config.trade_dialogue_rounds,
+                    allow_fraud=config.trade_allow_fraud,
+                    memory_maxlen=config.trade_memory_maxlen,
+                )
+            else:
+                sim.trade_system = TradeSystem(sim.env)
+
+        # LLM provider
+        sim.llm_provider = None
+        if config.enable_llm_agents:
+            provider_type = getattr(config, 'llm_provider_type', 'openrouter')
+            if provider_type == "vllm":
+                from redblackbench.providers.vllm_provider import VLLMProvider
+                sim.llm_provider = VLLMProvider(
+                    model=config.llm_provider_model,
+                    max_tokens=2048
+                )
+            else:
+                sim.llm_provider = OpenRouterProvider(
+                    model=config.llm_provider_model,
+                    max_tokens=2048
+                )
+
+        # Restore simulation state
+        sim.tick = data["tick"]
+        sim.next_agent_id = data["next_agent_id"]
+        sim.initial_population = data["initial_population"]
+
+        # RNG state
+        sim.rng = random.Random()
+        sim.rng.setstate(data["rng_state"])
+
+        # Name generator
+        sim.name_generator = NameGenerator()
+        sim.name_generator.set_state(data["name_generator_state"])
+
+        # Agent factory
+        sim.agent_factory = lambda **kwargs: SugarAgent(**kwargs)
+
+        # Trajectory (new for resumed run)
+        sim.trajectory = SugarTrajectory(
+            run_id=sim.logger.experiment_id,
+            config=config.__dict__
+        )
+
+        # Restore agents
+        sim.agents = []
+        for agent_data in data["agents"]:
+            is_llm = agent_data.get("is_llm_agent", False)
+
+            if is_llm and sim.llm_provider:
+                agent = LLMSugarAgent(
+                    provider=sim.llm_provider,
+                    goal_prompt=agent_data.get("goal_prompt", config.llm_goal_prompt),
+                    agent_id=agent_data["agent_id"],
+                    pos=tuple(agent_data["pos"]),
+                    vision=agent_data["vision"],
+                    metabolism=agent_data["metabolism"],
+                    max_age=agent_data["max_age"],
+                    wealth=agent_data["wealth"],
+                    spice=agent_data.get("spice", 0),
+                    metabolism_spice=agent_data.get("metabolism_spice", 0),
+                    age=agent_data.get("age", 0),
+                    persona=agent_data.get("persona", "A"),
+                    name=agent_data.get("name", ""),
+                )
+            else:
+                agent = SugarAgent(
+                    agent_id=agent_data["agent_id"],
+                    pos=tuple(agent_data["pos"]),
+                    vision=agent_data["vision"],
+                    metabolism=agent_data["metabolism"],
+                    max_age=agent_data["max_age"],
+                    wealth=agent_data["wealth"],
+                    spice=agent_data.get("spice", 0),
+                    metabolism_spice=agent_data.get("metabolism_spice", 0),
+                    age=agent_data.get("age", 0),
+                    persona=agent_data.get("persona", "A"),
+                    name=agent_data.get("name", ""),
+                )
+
+            # Restore agent state from checkpoint
+            agent.restore_from_checkpoint(agent_data)
+
+            sim.agents.append(agent)
+            sim.env.grid_agents[agent.pos] = agent
+
+        print(f"Checkpoint loaded: tick={sim.tick}, agents={len(sim.agents)}")
+        print(f"Resumed experiment at: {sim.logger.run_dir}")
+
+        return sim
+
+    def run_with_checkpoints(self, steps: Optional[int] = None, checkpoint_interval: int = 50) -> None:
+        """Run simulation with periodic checkpoint saves.
+
+        Args:
+            steps: Number of steps to run. If None, runs to max_ticks.
+            checkpoint_interval: Save checkpoint every N ticks.
+        """
+        # Initial snapshot
+        self.save_snapshot(filename="initial_state.json")
+
+        limit = steps or self.config.max_ticks
+        start_tick = self.tick
+
+        for i in range(limit):
+            self.step()
+
+            # Save checkpoint at intervals
+            if checkpoint_interval > 0 and self.tick % checkpoint_interval == 0:
+                self.save_checkpoint()
+
+        # Final snapshot
+        self.save_snapshot(filename="final_state.json")
+
+        # Save trajectory
+        traj_filename = f"trajectory_{self.logger.experiment_id}.json"
+        self.trajectory.save(self.logger.get_log_path(traj_filename))
+
+        # Save debug summary
+        self.debug_logger.save_summary()
+
+        # Generate welfare plots
+        self._generate_plots()
+
+        print(f"Simulation complete: {start_tick} -> {self.tick} ({limit} steps)")

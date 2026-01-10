@@ -88,8 +88,19 @@ Extended multi-agent economic simulation in `sugarscape/` for studying agent dec
 - **`SugarAgent`** (`agent.py`): Base agent with vision, metabolism, wealth, spice, persona, trade memory, trust scores
 - **`LLMSugarAgent`** (`llm_agent.py`): Extends SugarAgent with LLM provider, goal prompt, conversation history. Uses `async_decide_move()` for batched inference
 - **`SugarEnvironment`** (`environment.py`): 50x50 torus grid with sugar/spice peaks at (15,15)/(35,35). Handles growback, harvest, agent tracking
-- **`SugarSimulation`** (`simulation.py`): Main controller orchestrating tick loop, checkpointing, metrics logging
+- **`SugarSimulation`** (`simulation.py`): Main controller orchestrating tick loop, snapshot saving, metrics logging
 - **`SugarscapeConfig`** (`config.py`): Comprehensive dataclass with ~30 parameters
+
+**Checkpoint System** (`simulation.py`):
+- `save_checkpoint()` - Saves complete simulation state to pickle file
+- `load_checkpoint(path)` - Class method to restore simulation from checkpoint
+- `run_with_checkpoints(steps, checkpoint_interval)` - Run with periodic saves
+- **Full state preserved**: RNG state, agent conversation history, trade memory, visited cells, partner trust, global reputation
+- Checkpoints stored in `results/sugarscape/{experiment}/checkpoints/checkpoint_tick_N.pkl`
+
+**Snapshot System** (JSON for analysis):
+- `save_snapshot()` - Lightweight JSON snapshots at simulation start/end
+- Captures basic state for analysis (positions, wealth, spice, grid state)
 
 **Persona System (A/B/C/D):**
 - **A (Conservative)**: Prioritizes safety, avoids long moves
@@ -125,10 +136,30 @@ python scripts/run_persona_experiment.py   # Compare personas
 ```
 results/sugarscape/{experiment}/
 ├── config.json
-├── metrics.csv          # Time series (every 10 ticks)
-├── trajectory_*.json    # LLM interactions for RL
-├── plots/               # Welfare visualizations
-└── debug/               # Optional detailed logs
+├── metrics.csv              # Time series (every 10 ticks)
+├── trajectory_*.json        # LLM interactions for RL
+├── initial_state.json       # Snapshot at tick 0
+├── final_state.json         # Snapshot at simulation end
+├── checkpoints/             # Full state checkpoints (pickle)
+│   ├── checkpoint_tick_50.pkl
+│   └── checkpoint_tick_100.pkl
+├── plots/                   # Welfare visualizations
+└── debug/                   # Optional detailed logs
+```
+
+**Checkpoint/Resume Usage:**
+```python
+from redblackbench.sugarscape.simulation import SugarSimulation
+from redblackbench.sugarscape.config import SugarscapeConfig
+
+# Run with periodic checkpoints
+config = SugarscapeConfig(enable_spice=True, enable_trade=True)
+sim = SugarSimulation(config=config, experiment_name='my_experiment')
+sim.run_with_checkpoints(steps=1000, checkpoint_interval=100)
+
+# Resume from checkpoint
+sim = SugarSimulation.load_checkpoint('path/to/checkpoint_tick_500.pkl')
+sim.run_with_checkpoints(steps=500, checkpoint_interval=100)
 ```
 
 ### Trajectory System

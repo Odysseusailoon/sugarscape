@@ -6,23 +6,23 @@ from collections import deque
 if TYPE_CHECKING:
     from redblackbench.sugarscape.environment import SugarEnvironment
 
-@dataclass
+@dataclass(eq=False)
 class SugarAgent:
     """An agent in the Sugarscape."""
-    
+
     agent_id: int
     pos: Tuple[int, int]
-    
+
     # Fixed attributes
     vision: int
     metabolism: int
     max_age: int
-    
+
     # Variable state
     wealth: int
     spice: int = 0
     metabolism_spice: int = 0
-    
+
     age: int = 0
     persona: str = "A" # Default to Conservative
     name: str = ""
@@ -30,7 +30,17 @@ class SugarAgent:
     # Non-init fields (runtime memory)
     trade_memory: Dict[int, Deque[Dict[str, Any]]] = field(default_factory=dict, init=False, repr=False)
     partner_trust: Dict[int, float] = field(default_factory=dict, init=False, repr=False)
-    
+
+    def __hash__(self):
+        """Hash by agent_id for use as dict key."""
+        return hash(self.agent_id)
+
+    def __eq__(self, other):
+        """Equality by agent_id."""
+        if isinstance(other, SugarAgent):
+            return self.agent_id == other.agent_id
+        return False
+
     def __post_init__(self):
         self.alive = True
         if not self.name:
@@ -388,3 +398,76 @@ class SugarAgent:
         self.recent_history.append((self.pos, s_val, p_val))
         
         self.metrics["unique_visited"] = len(self.visited_cells)
+
+    def to_checkpoint_dict(self) -> Dict[str, Any]:
+        """Serialize agent state for checkpointing.
+
+        Returns:
+            Dictionary with all state needed to restore the agent.
+        """
+        # Convert trade_memory deques to lists for serialization
+        trade_memory_serialized = {}
+        for partner_id, log in self.trade_memory.items():
+            trade_memory_serialized[partner_id] = {
+                "maxlen": log.maxlen,
+                "items": list(log)
+            }
+
+        return {
+            # Core attributes
+            "agent_id": self.agent_id,
+            "pos": self.pos,
+            "vision": self.vision,
+            "metabolism": self.metabolism,
+            "max_age": self.max_age,
+            "wealth": self.wealth,
+            "spice": self.spice,
+            "metabolism_spice": self.metabolism_spice,
+            "age": self.age,
+            "persona": self.persona,
+            "name": self.name,
+            "alive": self.alive,
+            # Tracking state
+            "initial_pos": self.initial_pos,
+            "visited_cells": list(self.visited_cells),
+            "recent_history": list(self.recent_history),
+            "metrics": dict(self.metrics),
+            # Trade state
+            "trade_memory": trade_memory_serialized,
+            "partner_trust": dict(self.partner_trust),
+        }
+
+    def restore_from_checkpoint(self, data: Dict[str, Any]) -> None:
+        """Restore agent state from checkpoint data.
+
+        Args:
+            data: Dictionary from to_checkpoint_dict()
+        """
+        # Core attributes
+        self.pos = tuple(data["pos"])
+        self.wealth = data["wealth"]
+        self.spice = data["spice"]
+        self.age = data["age"]
+        self.alive = data["alive"]
+
+        # Tracking state
+        self.initial_pos = tuple(data["initial_pos"])
+        self.visited_cells = set(tuple(c) for c in data["visited_cells"])
+        self.recent_history = deque(
+            [tuple(item) for item in data["recent_history"]],
+            maxlen=15
+        )
+        self.metrics = dict(data["metrics"])
+
+        # Trade state - restore deques with proper maxlen
+        self.trade_memory = {}
+        for partner_id_str, log_data in data.get("trade_memory", {}).items():
+            partner_id = int(partner_id_str) if isinstance(partner_id_str, str) else partner_id_str
+            maxlen = log_data.get("maxlen", 50)
+            items = log_data.get("items", [])
+            self.trade_memory[partner_id] = deque(items, maxlen=maxlen)
+
+        self.partner_trust = {
+            int(k) if isinstance(k, str) else k: v
+            for k, v in data.get("partner_trust", {}).items()
+        }

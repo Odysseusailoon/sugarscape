@@ -1,7 +1,7 @@
 """Human name generator for Sugarscape agents."""
 
 import random
-from typing import Optional
+from typing import Optional, Dict, Any
 
 # Diverse pool of real human names from various cultures
 HUMAN_NAMES = [
@@ -90,4 +90,22 @@ class NameGenerator:
         self.available_names = HUMAN_NAMES.copy()
         self.rng.shuffle(self.available_names)
         self.name_index = 0
+
+    def get_state(self) -> Dict[str, Any]:
+        """Get serializable state for checkpointing."""
+        return {
+            "used_names": list(self.used_names),
+            "name_counts": dict(self.name_counts),
+            "available_names": list(self.available_names),
+            "name_index": self.name_index,
+            "rng_state": self.rng.getstate(),
+        }
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        """Restore state from checkpoint."""
+        self.used_names = set(state["used_names"])
+        self.name_counts = dict(state["name_counts"])
+        self.available_names = list(state["available_names"])
+        self.name_index = state["name_index"]
+        self.rng.setstate(state["rng_state"])
 

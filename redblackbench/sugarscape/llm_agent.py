@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from redblackbench.sugarscape.environment import SugarEnvironment
     from redblackbench.providers.base import BaseLLMProvider
 
-@dataclass
+@dataclass(eq=False)
 class LLMSugarAgent(SugarAgent):
     """SugarAgent powered by LLM."""
     
@@ -257,3 +257,25 @@ class LLMSugarAgent(SugarAgent):
             ns = "NORTH" if dy > 0 else "SOUTH"
             ew = "EAST" if dx > 0 else "WEST"
             return f"{ns}{ew}"
+
+    def to_checkpoint_dict(self) -> Dict[str, Any]:
+        """Serialize LLM agent state for checkpointing.
+
+        Extends parent to include LLM-specific state.
+        """
+        data = super().to_checkpoint_dict()
+        data["is_llm_agent"] = True
+        data["goal_prompt"] = self.goal_prompt
+        data["conversation_history"] = list(self.conversation_history)
+        data["move_history"] = list(self.move_history)
+        return data
+
+    def restore_from_checkpoint(self, data: Dict[str, Any]) -> None:
+        """Restore LLM agent state from checkpoint data.
+
+        Extends parent to restore LLM-specific state.
+        """
+        super().restore_from_checkpoint(data)
+        self.goal_prompt = data.get("goal_prompt", "")
+        self.conversation_history = list(data.get("conversation_history", []))
+        self.move_history = list(data.get("move_history", []))

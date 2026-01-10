@@ -2,6 +2,7 @@ import os
 import json
 import csv
 import time
+import pickle
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -128,6 +129,8 @@ class ExperimentLogger:
         """Create necessary directories."""
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.plots_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoints_dir = self.run_dir / "checkpoints"
+        self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
         print(f"Experiment initialized at: {self.run_dir}")
 
     def _init_csv(self):
@@ -170,3 +173,29 @@ class ExperimentLogger:
     def get_log_path(self, filename: str) -> str:
         """Get full path for a log file in the run directory."""
         return str(self.run_dir / filename)
+
+    def save_checkpoint(self, data: Dict[str, Any], tick: int) -> Path:
+        """Save checkpoint using pickle for complex nested structures.
+
+        Args:
+            data: Complete simulation state dictionary
+            tick: Current simulation tick (for filename)
+
+        Returns:
+            Path to the saved checkpoint file
+        """
+        checkpoint_path = self.checkpoints_dir / f"checkpoint_tick_{tick}.pkl"
+        with open(checkpoint_path, 'wb') as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        return checkpoint_path
+
+    def get_checkpoint_path(self, tick: int) -> Path:
+        """Get path for a checkpoint file at given tick."""
+        return self.checkpoints_dir / f"checkpoint_tick_{tick}.pkl"
+
+    def list_checkpoints(self) -> List[Path]:
+        """List all checkpoint files in order."""
+        checkpoints = list(self.checkpoints_dir.glob("checkpoint_tick_*.pkl"))
+        # Sort by tick number
+        checkpoints.sort(key=lambda p: int(p.stem.split("_")[-1]))
+        return checkpoints

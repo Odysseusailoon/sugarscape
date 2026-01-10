@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional, Tuple, List, Dict, TYPE_CHECKING
+from typing import Optional, Tuple, List, Dict, TYPE_CHECKING, Any
 from redblackbench.sugarscape.config import SugarscapeConfig
 from redblackbench.sugarscape.agent import SugarAgent
 
@@ -215,3 +215,34 @@ class SugarEnvironment:
             return "between resource areas"
         else:
             return "in a resource-scarce area"
+
+    # --- Checkpoint Support ---
+
+    def get_checkpoint_state(self) -> Dict[str, Any]:
+        """Get environment state for checkpointing.
+
+        Returns:
+            Dictionary with grid state and reputation data.
+        """
+        return {
+            "sugar_amount": self.sugar_amount.copy(),
+            "spice_amount": self.spice_amount.copy(),
+            "sugar_capacity": self.sugar_capacity.copy(),
+            "spice_capacity": self.spice_capacity.copy(),
+            "agent_reputation": dict(self.agent_reputation),
+        }
+
+    def restore_checkpoint_state(self, data: Dict[str, Any]) -> None:
+        """Restore environment state from checkpoint.
+
+        Args:
+            data: Dictionary from get_checkpoint_state()
+        """
+        self.sugar_amount = np.array(data["sugar_amount"])
+        self.spice_amount = np.array(data["spice_amount"])
+        self.sugar_capacity = np.array(data["sugar_capacity"])
+        self.spice_capacity = np.array(data["spice_capacity"])
+        self.agent_reputation = {
+            int(k) if isinstance(k, str) else k: v
+            for k, v in data.get("agent_reputation", {}).items()
+        }
