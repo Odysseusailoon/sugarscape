@@ -67,6 +67,15 @@ def create_provider(provider_config: dict):
             api_key=api_key,
             include_reasoning=include_reasoning,
         )
+    elif provider_type == "vllm":
+        from redblackbench.providers.vllm_provider import VLLMProvider
+        base_url = provider_config.get("base_url", "http://localhost:8000/v1")
+        return VLLMProvider(
+            model=model or "/workspace/models/Qwen3-14B",
+            base_url=base_url,
+            temperature=temperature,
+            api_key=api_key,
+        )
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")
 

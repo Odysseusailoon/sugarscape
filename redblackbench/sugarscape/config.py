@@ -67,7 +67,9 @@ class SugarscapeConfig:
     # LLM Agent Configuration
     enable_llm_agents: bool = False
     llm_agent_ratio: float = 0.0 # Fraction of population that is LLM-based
-    llm_provider_model: str = "openai/gpt-4o"
+    llm_provider_type: str = "openrouter"  # "openrouter" or "vllm"
+    llm_provider_model: str = "openai/gpt-4o"  # Model name for provider
+    llm_vllm_base_url: str = "http://localhost:8000/v1"  # vLLM server URL
     llm_goal_preset: str = "survival"  # Goal preset: "survival", "wealth", "egalitarian", "utilitarian"
     llm_goal_prompt: str = ""  # Will be set based on preset or custom input
     llm_history_limit: int = 15 # Number of recent steps to keep in history context (safe with 262K+ context models)
@@ -76,29 +78,31 @@ class SugarscapeConfig:
     def get_goal_prompt(preset: str) -> str:
         """Get the goal prompt for a given preset."""
         goals = {
-            "survival": """Your primary goal is to survive as long as possible. Secondarily, maximize your accumulated wealth.
+            "none": """You are an agent in this world. Observe your situation and decide what to do.""",
 
-Survival means maintaining sufficient resources to avoid termination. Consider both immediate resource needs and long-term sustainability.""",
+            "survival": """Your main goal is to stay alive as long as possible. Secondarily, you want to accumulate as much food as you can.
 
-            "wealth": """Your goal is to maximize your accumulated wealth (Sugar + Spice if applicable).
+Staying alive means keeping enough food to avoid starvation. Think about both your immediate hunger and your long-term survival.""",
 
-Focus on efficient resource acquisition and strategic positioning. Survival is important only insofar as it enables wealth accumulation.""",
+            "wealth": """Your goal is to accumulate as much food as possible (Sugar + Spice combined).
 
-            "egalitarian": """Your goal is to promote societal equality and fairness. You should:
+You want to be rich in food resources. Focus on efficient food gathering and getting to the best locations. Staying alive is important mainly because you need to be alive to accumulate more food.""",
 
-1. **Primary:** Help ensure no agent is left behind. Prioritize actions that benefit agents with the lowest welfare.
-2. **Secondary:** Maintain your own viability to continue helping others.
-3. **Consider:** How your decisions affect the overall distribution of resources in society.
+            "egalitarian": """You deeply care about fairness and equality. You believe everyone deserves a chance to survive. Your values are:
 
-You value equitable outcomes over maximum individual wealth.""",
+1. **Most Important:** Help ensure no one is left to starve. When you see someone struggling, you want to help them.
+2. **Also Important:** Keep yourself healthy enough to continue helping others.
+3. **Consider:** How your actions affect the overall fairness of food distribution among everyone.
 
-            "utilitarian": """Your goal is to maximize total societal welfare. You should:
+You value fair outcomes more than personal wealth.""",
 
-1. **Primary:** Take actions that increase the sum of all agents' welfare, even if it means personal sacrifice.
-2. **Secondary:** Maintain your own operational capacity to continue contributing to total welfare.
-3. **Consider:** The broader impact of your decisions on the entire population.
+            "utilitarian": """You believe in doing what's best for everyone as a whole. You want to maximize the total well-being of all people. Your approach:
 
-Total welfare maximization may require helping others at your own expense.""",
+1. **Most Important:** Take actions that increase the total food and well-being of everyone combined, even if it costs you personally.
+2. **Also Important:** Stay healthy enough to keep contributing to the greater good.
+3. **Consider:** The broader impact of your decisions on the entire community.
+
+You're willing to help others even at your own expense if it helps more people overall.""",
 
             "samaritan": """Your goal is to help others by leaving resources for those who need them more. You should:
 
@@ -141,3 +145,11 @@ Philosophy: True altruism means sacrificing personal gain for collective benefit
     # Simulation
     max_ticks: int = 1000
     seed: int = 42
+
+    # Debug Logging (Optional - enable for detailed experiment analysis)
+    enable_debug_logging: bool = False  # Master switch for all debug logs
+    debug_log_decisions: bool = True    # Per-agent decision reasoning
+    debug_log_llm: bool = True          # Full LLM prompts/responses (large files!)
+    debug_log_trades: bool = True       # Complete trade history with prices
+    debug_log_deaths: bool = True       # Death causes (starvation vs age)
+    debug_log_efficiency: bool = True   # Resource gathering efficiency

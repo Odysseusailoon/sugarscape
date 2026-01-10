@@ -1,7 +1,7 @@
 """LLM provider adapters for RedBlackBench."""
 
 from redblackbench.providers.base import (
-    BaseLLMProvider, 
+    BaseLLMProvider,
     EnhancedLLMProvider,
     ProviderConfig,
     EnhancedProviderConfig,
@@ -10,6 +10,7 @@ from redblackbench.providers.openai_provider import OpenAIProvider
 from redblackbench.providers.anthropic_provider import AnthropicProvider
 from redblackbench.providers.openrouter_provider import OpenRouterProvider
 from redblackbench.providers.aihubmix_provider import AIHubMixProvider
+from redblackbench.providers.vllm_provider import VLLMProvider
 from redblackbench.providers.rate_limiter import RateLimiter, RateLimitConfig
 from redblackbench.providers.cache import ResponseCache, CacheConfig
 from redblackbench.providers.retry import RetryConfig, CircuitBreaker
@@ -29,6 +30,7 @@ __all__ = [
     "AnthropicProvider",
     "OpenRouterProvider",
     "AIHubMixProvider",
+    "VLLMProvider",
     "RateLimiter",
     "RateLimitConfig",
     "ResponseCache",
@@ -40,4 +42,3 @@ __all__ = [
     "LoadBalanceStrategy",
     "create_load_balanced_provider",
 ]
-
