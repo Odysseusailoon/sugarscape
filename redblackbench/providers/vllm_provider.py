@@ -66,12 +66,14 @@ class VLLMProvider(BaseLLMProvider):
         self,
         system_prompt: str,
         messages: List[dict],
+        chat_template_kwargs: Optional[dict] = None,
     ) -> str:
         """Generate a response from vLLM server.
 
         Args:
             system_prompt: The system message for the conversation
             messages: List of message dictionaries with 'role' and 'content' keys
+            chat_template_kwargs: Optional kwargs for chat template (e.g., {"enable_thinking": False} for Qwen3)
 
         Returns:
             The generated response text
@@ -80,11 +82,11 @@ class VLLMProvider(BaseLLMProvider):
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages.extend(messages)
 
-        # Estimate input tokens and adjust max_tokens to stay within 4k context
+        # Estimate input tokens and adjust max_tokens to stay within context limit
         total_chars = len(system_prompt) + sum(len(m.get("content", "")) for m in messages)
         estimated_input_tokens = total_chars // 3  # ~3 chars per token for English
 
-        context_limit = 4096
+        context_limit = 32768  # Qwen3-14B supports 32k context
         available_tokens = context_limit - estimated_input_tokens - 100  # buffer
         effective_max_tokens = min(self.config.max_tokens, max(256, available_tokens))
 
@@ -96,11 +98,17 @@ class VLLMProvider(BaseLLMProvider):
                 base_url=self.base_url,
             )
 
+        # Build extra_body for vLLM-specific parameters
+        extra_body = {}
+        if chat_template_kwargs:
+            extra_body["chat_template_kwargs"] = chat_template_kwargs
+
         response = await self._client.chat.completions.create(
             model=self.config.model,
             messages=api_messages,
             temperature=self.config.temperature,
             max_tokens=effective_max_tokens,
+            extra_body=extra_body if extra_body else None,
         )
 
         return response.choices[0].message.content or ""
