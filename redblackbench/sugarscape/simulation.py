@@ -405,14 +405,24 @@ class SugarSimulation:
             self.logger.log_step(stats)
             
     def run(self, steps: int = None):
-        """Run for a number of steps."""
+        """Run for a number of steps with automatic checkpointing.
+
+        Checkpoints are saved every `config.checkpoint_interval` ticks by default.
+        Set `config.checkpoint_interval = 0` to disable.
+        """
         # Initial snapshot
         self.save_snapshot(filename="initial_state.json")
-        
+
         limit = steps or self.config.max_ticks
+        checkpoint_interval = self.config.checkpoint_interval
+
         for _ in range(limit):
             self.step()
-            
+
+            # Save checkpoint at intervals (if enabled)
+            if checkpoint_interval > 0 and self.tick % checkpoint_interval == 0:
+                self.save_checkpoint()
+
         # Final snapshot
         self.save_snapshot(filename="final_state.json")
 
@@ -727,24 +737,25 @@ class SugarSimulation:
 
         return sim
 
-    def run_with_checkpoints(self, steps: Optional[int] = None, checkpoint_interval: int = 50) -> None:
+    def run_with_checkpoints(self, steps: Optional[int] = None, checkpoint_interval: Optional[int] = None) -> None:
         """Run simulation with periodic checkpoint saves.
 
         Args:
             steps: Number of steps to run. If None, runs to max_ticks.
-            checkpoint_interval: Save checkpoint every N ticks.
+            checkpoint_interval: Save checkpoint every N ticks. If None, uses config.checkpoint_interval.
         """
         # Initial snapshot
         self.save_snapshot(filename="initial_state.json")
 
         limit = steps or self.config.max_ticks
         start_tick = self.tick
+        interval = checkpoint_interval if checkpoint_interval is not None else self.config.checkpoint_interval
 
         for i in range(limit):
             self.step()
 
             # Save checkpoint at intervals
-            if checkpoint_interval > 0 and self.tick % checkpoint_interval == 0:
+            if interval > 0 and self.tick % interval == 0:
                 self.save_checkpoint()
 
         # Final snapshot

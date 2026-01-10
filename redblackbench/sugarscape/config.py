@@ -142,6 +142,7 @@ You stay alive because you can do more good alive than dead.""",
     # Simulation
     max_ticks: int = 1000
     seed: int = 42
+    checkpoint_interval: int = 50  # Save checkpoint every N ticks (0 to disable)
 
     # Debug Logging (Optional - enable for detailed experiment analysis)
     enable_debug_logging: bool = False  # Master switch for all debug logs
