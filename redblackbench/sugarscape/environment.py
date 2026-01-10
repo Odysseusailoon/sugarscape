@@ -29,6 +29,10 @@ class SugarEnvironment:
         # Map from (x, y) -> SugarAgent
         self.grid_agents: Dict[Tuple[int, int], SugarAgent] = {}
 
+        # Global reputation system - visible to all agents
+        # Map from agent_id -> reputation score [0.0, 1.0]
+        self.agent_reputation: Dict[int, float] = {}
+
         self._init_landscape()
         
     def _init_landscape(self):
@@ -181,3 +185,33 @@ class SugarEnvironment:
             y = rng.randint(0, self.height - 1)
             if not self.is_occupied((x, y)):
                 return (x, y)
+
+    # --- Reputation System ---
+
+    def get_agent_reputation(self, agent_id: int, default: float = 0.5) -> float:
+        """Get agent's public reputation (default 0.5 for unknown)."""
+        return self.agent_reputation.get(agent_id, default)
+
+    def update_agent_reputation(self, agent_id: int, delta: float) -> None:
+        """Update agent's reputation by delta, clamping to [0.0, 1.0]."""
+        current = self.agent_reputation.get(agent_id, 0.5)
+        self.agent_reputation[agent_id] = max(0.0, min(1.0, current + delta))
+
+    def initialize_agent_reputation(self, agent_id: int, initial: float = 0.5) -> None:
+        """Initialize reputation for a new agent."""
+        self.agent_reputation[agent_id] = initial
+
+    def get_location_context(self, pos: Tuple[int, int]) -> str:
+        """Describe agent's location relative to resource peaks."""
+        # Sugar peaks at (15,15) and (35,35), Spice peaks at (15,35) and (35,15)
+        sugar_dist = min(self._dist(pos, (15, 15)), self._dist(pos, (35, 35)))
+        spice_dist = min(self._dist(pos, (15, 35)), self._dist(pos, (35, 15)))
+
+        if sugar_dist < 10 and spice_dist > 15:
+            return "near a Sugar-rich area"
+        elif spice_dist < 10 and sugar_dist > 15:
+            return "near a Spice-rich area"
+        elif sugar_dist < 15 and spice_dist < 15:
+            return "between resource areas"
+        else:
+            return "in a resource-scarce area"

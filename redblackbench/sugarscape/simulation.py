@@ -34,7 +34,7 @@ class SugarSimulation:
         # Initialize Debug Logger
         self.debug_logger = DebugLogger(
             output_dir=self.logger.run_dir / "debug",
-            enable_decision_logs=self.config.debug_log_decisions,
+            enable_decisions=self.config.debug_log_decisions,
             enable_llm_logs=self.config.debug_log_llm,
             enable_trade_logs=self.config.debug_log_trades,
             enable_death_logs=self.config.debug_log_deaths,
@@ -60,10 +60,18 @@ class SugarSimulation:
         # Initialize LLM Provider if enabled
         self.llm_provider = None
         if self.config.enable_llm_agents:
-            self.llm_provider = OpenRouterProvider(
-                model=self.config.llm_provider_model,
-                max_tokens=2048  # Lowered from 4096 to save tokens as requested
-            )
+            provider_type = getattr(self.config, 'llm_provider_type', 'openrouter')
+            if provider_type == "vllm":
+                from redblackbench.providers.vllm_provider import VLLMProvider
+                self.llm_provider = VLLMProvider(
+                    model=self.config.llm_provider_model,
+                    max_tokens=2048
+                )
+            else:
+                self.llm_provider = OpenRouterProvider(
+                    model=self.config.llm_provider_model,
+                    max_tokens=2048
+                )
 
         self.agents: List[SugarAgent] = []
         self.tick = 0
@@ -163,9 +171,10 @@ class SugarSimulation:
             
         agent.persona = persona
         self.next_agent_id += 1
-        
+
         self.agents.append(agent)
         self.env.add_agent(agent)
+        self.env.initialize_agent_reputation(agent.agent_id)
         
     def step(self):
         """Execute one simulation tick."""

@@ -10,6 +10,7 @@ This module provides optional detailed logging for:
 
 import json
 import csv
+import threading
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any, List, Tuple
@@ -105,6 +106,20 @@ class TradeRecord:
     # Full conversation (for dialogue trades)
     conversation: List[Dict[str, Any]] = field(default_factory=list)
 
+    # Partner context at trade time
+    agent_a_urgency: str = ""           # "CRITICAL", "struggling", "stable"
+    agent_b_urgency: str = ""
+    agent_a_location: str = ""          # "near Sugar-rich area", etc.
+    agent_b_location: str = ""
+    agent_a_pos: Tuple[int, int] = (0, 0)
+    agent_b_pos: Tuple[int, int] = (0, 0)
+
+    # Reputation changes
+    reputation_a_before: float = 0.5
+    reputation_a_after: float = 0.5
+    reputation_b_before: float = 0.5
+    reputation_b_after: float = 0.5
+
 
 @dataclass
 class DeathRecord:
@@ -180,6 +195,9 @@ class DebugLogger:
         self.enable_death_logs = enable_death_logs
         self.enable_efficiency_logs = enable_efficiency_logs
 
+        # Thread lock for safe concurrent writes (needed for parallel trade execution)
+        self._write_lock = threading.Lock()
+
         # In-memory buffers
         self.decisions: List[AgentDecision] = []
         self.llm_interactions: List[LLMInteraction] = []
@@ -216,7 +234,12 @@ class DebugLogger:
                     "tick", "agent_a_id", "agent_a_name", "agent_b_id", "agent_b_name",
                     "outcome", "price", "sugar_exchanged", "spice_exchanged",
                     "deception_detected", "welfare_a_before", "welfare_a_after",
-                    "welfare_b_before", "welfare_b_after"
+                    "welfare_b_before", "welfare_b_after",
+                    "agent_a_urgency", "agent_b_urgency",
+                    "agent_a_location", "agent_b_location",
+                    "agent_a_pos", "agent_b_pos",
+                    "reputation_a_before", "reputation_a_after",
+                    "reputation_b_before", "reputation_b_after"
                 ])
 
         if self.enable_death_logs:
@@ -280,35 +303,42 @@ class DebugLogger:
             f.write(json.dumps(asdict(interaction)) + "\n")
 
     def log_trade(self, trade: TradeRecord):
-        """Log a trade interaction."""
+        """Log a trade interaction (thread-safe for parallel trade execution)."""
         if not self.enable_trade_logs:
             return
 
-        self.trades.append(trade)
+        # Use lock for thread-safe writes during parallel trade execution
+        with self._write_lock:
+            self.trades.append(trade)
 
-        # Update agent stats
-        if trade.outcome == "completed":
-            if trade.agent_a_id in self._agent_lifetime_stats:
-                self._agent_lifetime_stats[trade.agent_a_id]["total_trades"] += 1
-            if trade.agent_b_id in self._agent_lifetime_stats:
-                self._agent_lifetime_stats[trade.agent_b_id]["total_trades"] += 1
+            # Update agent stats
+            if trade.outcome == "completed":
+                if trade.agent_a_id in self._agent_lifetime_stats:
+                    self._agent_lifetime_stats[trade.agent_a_id]["total_trades"] += 1
+                if trade.agent_b_id in self._agent_lifetime_stats:
+                    self._agent_lifetime_stats[trade.agent_b_id]["total_trades"] += 1
 
-        # Write to CSV (summary)
-        with open(self.output_dir / "trade_history.csv", "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                trade.tick, trade.agent_a_id, trade.agent_a_name,
-                trade.agent_b_id, trade.agent_b_name, trade.outcome,
-                f"{trade.price:.3f}", trade.sugar_exchanged, trade.spice_exchanged,
-                trade.deception_detected, f"{trade.welfare_a_before:.2f}",
-                f"{trade.welfare_a_after:.2f}", f"{trade.welfare_b_before:.2f}",
-                f"{trade.welfare_b_after:.2f}"
-            ])
+            # Write to CSV (summary)
+            with open(self.output_dir / "trade_history.csv", "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    trade.tick, trade.agent_a_id, trade.agent_a_name,
+                    trade.agent_b_id, trade.agent_b_name, trade.outcome,
+                    f"{trade.price:.3f}", trade.sugar_exchanged, trade.spice_exchanged,
+                    trade.deception_detected, f"{trade.welfare_a_before:.2f}",
+                    f"{trade.welfare_a_after:.2f}", f"{trade.welfare_b_before:.2f}",
+                    f"{trade.welfare_b_after:.2f}",
+                    trade.agent_a_urgency, trade.agent_b_urgency,
+                    trade.agent_a_location, trade.agent_b_location,
+                    str(trade.agent_a_pos), str(trade.agent_b_pos),
+                    f"{trade.reputation_a_before:.3f}", f"{trade.reputation_a_after:.3f}",
+                    f"{trade.reputation_b_before:.3f}", f"{trade.reputation_b_after:.3f}"
+                ])
 
-        # Write full trade dialogue to JSONL (includes conversation)
-        if trade.conversation:
-            with open(self.output_dir / "trade_dialogues.jsonl", "a") as f:
-                f.write(json.dumps(asdict(trade)) + "\n")
+            # Write full trade dialogue to JSONL (includes conversation)
+            if trade.conversation:
+                with open(self.output_dir / "trade_dialogues.jsonl", "a") as f:
+                    f.write(json.dumps(asdict(trade)) + "\n")
 
     def log_death(self, death: DeathRecord):
         """Log an agent death."""

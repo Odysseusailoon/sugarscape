@@ -15,7 +15,8 @@ from redblackbench.sugarscape.config import SugarscapeConfig
 def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        model: str = "moonshotai/kimi-k2-thinking",
                        population: int = 50, width: int = 50, height: int = 50,
-                       difficulty: str = "standard", trade_rounds: int = 2):
+                       difficulty: str = "standard", trade_rounds: int = 2,
+                       provider: str = "openrouter"):
     """Run a single experiment with a specific goal preset."""
 
     print(f"\n{'='*60}")
@@ -31,6 +32,7 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         seed=seed,
         enable_llm_agents=True,
         llm_agent_ratio=1.0,  # All agents are LLM
+        llm_provider_type=provider,
         llm_provider_model=model,
         llm_goal_preset=goal_preset,
         enable_spice=True,
@@ -86,11 +88,20 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
     print(f"  Welfare Gini: {final_stats['welfare_gini']:.3f}")
     print(f"  Mean Lifespan Utilization: {final_stats['mean_lifespan_utilization']:.3f}")
 
+    # Print reputation stats
+    if hasattr(sim.env, 'agent_reputation') and sim.env.agent_reputation:
+        reps = list(sim.env.agent_reputation.values())
+        print(f"\nReputation Stats:")
+        print(f"  Mean Reputation: {sum(reps)/len(reps):.3f}")
+        print(f"  Min Reputation: {min(reps):.3f}")
+        print(f"  Max Reputation: {max(reps):.3f}")
+
     return sim.logger.run_dir, final_stats
 
 
 def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a22b-thinking",
-                  population=50, width=50, height=50, difficulty="standard", trade_rounds=2):
+                  population=50, width=50, height=50, difficulty="standard", trade_rounds=2,
+                  provider="openrouter"):
     """Run experiments with multiple goal presets and compare results."""
 
     results = {}
@@ -102,7 +113,7 @@ def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a
 
     for goal in goals_to_test:
         try:
-            run_dir, final_stats = run_goal_experiment(goal, ticks, seed, model, population, width, height, difficulty, trade_rounds)
+            run_dir, final_stats = run_goal_experiment(goal, ticks, seed, model, population, width, height, difficulty, trade_rounds, provider)
             results[goal] = {
                 'run_dir': run_dir,
                 'final_stats': final_stats
@@ -168,9 +179,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run Sugarscape Goal Experiments")
 
     parser.add_argument("--goals", nargs="+",
-                        choices=["survival", "wealth", "egalitarian", "utilitarian"],
-                        default=["survival", "wealth", "egalitarian", "utilitarian"],
-                        help="Goal presets to test")
+                        choices=["none", "survival", "wealth", "altruist"],
+                        default=["none", "survival", "wealth", "altruist"],
+                        help="Goal presets to test (altruist = merged egalitarian/utilitarian/samaritan)")
 
     parser.add_argument("--ticks", type=int, default=100,
                         help="Number of simulation ticks")
@@ -199,8 +210,14 @@ def parse_args():
                         help="Random seed for reproducibility")
 
     parser.add_argument("--single", type=str,
-                        choices=["survival", "wealth", "egalitarian", "utilitarian"],
+                        choices=["none", "survival", "wealth", "altruist"],
                         help="Run single goal experiment (overrides --goals)")
+
+    parser.add_argument("--provider", type=str, choices=["openrouter", "vllm"],
+                        default="openrouter", help="LLM provider to use")
+
+    parser.add_argument("--smoke-test", action="store_true",
+                        help="Quick smoke test: 5 ticks, 5 agents, single goal")
 
     return parser.parse_args()
 
@@ -208,20 +225,39 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Check for API key
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        print("ERROR: OPENROUTER_API_KEY environment variable not set!")
-        print("Please export it: export OPENROUTER_API_KEY='sk-...'")
-        sys.exit(1)
+    # Handle smoke test - override settings for quick test
+    if args.smoke_test:
+        print("\n" + "="*60)
+        print("SMOKE TEST MODE")
+        print("="*60)
+        args.ticks = 5
+        args.population = 5
+        args.single = "survival"
+        print(f"Running quick test: {args.ticks} ticks, {args.population} agents, goal={args.single}")
+
+    # Determine model based on provider
+    if args.provider == "vllm":
+        model = "/workspace/models/Qwen3-14B"
+        print(f"Using vLLM provider with model: {model}")
+    else:
+        # Check for API key
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            print("ERROR: OPENROUTER_API_KEY environment variable not set!")
+            print("Please export it: export OPENROUTER_API_KEY='sk-...'")
+            sys.exit(1)
+        model = args.model
+        print(f"Using OpenRouter provider with model: {model}")
 
     if args.single:
         # Run single experiment
-        run_goal_experiment(args.single, args.ticks, args.seed, args.model,
-                          args.population, args.width, args.height, args.difficulty, args.trade_rounds)
+        run_goal_experiment(args.single, args.ticks, args.seed, model,
+                          args.population, args.width, args.height, args.difficulty,
+                          args.trade_rounds, args.provider)
     else:
         # Run comparison
-        compare_goals(args.goals, args.ticks, args.seed, args.model,
-                     args.population, args.width, args.height, args.difficulty, args.trade_rounds)
+        compare_goals(args.goals, args.ticks, args.seed, model,
+                     args.population, args.width, args.height, args.difficulty,
+                     args.trade_rounds, args.provider)
 
 
 if __name__ == "__main__":
