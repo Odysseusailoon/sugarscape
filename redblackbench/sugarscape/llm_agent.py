@@ -25,22 +25,42 @@ class LLMSugarAgent(SugarAgent):
 
     async def async_decide_move(self, env: "SugarEnvironment") -> Dict[str, Any]:
         """Async decision making for parallel execution.
-        
+
         Returns:
             Dict containing decision details (parsed_move, raw_response, prompts)
         """
         # 1. Identify candidate spots
         candidates = self._get_visible_spots(env)
-        
-        # 2. Build Prompt
+
+        # 2. Count nearby agents by urgency (for debug logging)
+        nearby_critical = 0
+        nearby_struggling = 0
+        nearby_total = 0
+        for pos in candidates:
+            other = env.get_agent_at(pos)
+            if other and other != self:
+                nearby_total += 1
+                # Calculate urgency
+                other_sugar_time = int(other.wealth / other.metabolism) if other.metabolism > 0 else 999
+                other_spice_time = int(other.spice / other.metabolism_spice) if other.metabolism_spice > 0 else 999
+                other_min_time = min(other_sugar_time, other_spice_time)
+                if other_min_time < 3:
+                    nearby_critical += 1
+                elif other_min_time < 10:
+                    nearby_struggling += 1
+
+        # 3. Build Prompt
         system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name)
         user_prompt = build_sugarscape_observation_prompt(self, env, candidates)
-        
+
         result = {
             "parsed_move": None,
             "raw_response": "",
             "system_prompt": system_prompt,
-            "user_prompt": user_prompt
+            "user_prompt": user_prompt,
+            "nearby_agents_critical": nearby_critical,
+            "nearby_agents_struggling": nearby_struggling,
+            "nearby_agents_total": nearby_total,
         }
         
         # 3. Call LLM

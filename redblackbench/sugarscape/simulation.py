@@ -376,6 +376,11 @@ class SugarSimulation:
                     input_tokens=0,  # TODO: Extract from provider if available
                     output_tokens=0,  # TODO: Extract from provider if available
                     latency_ms=0.0,  # TODO: Track latency
+                    # New fields for goal and nearby agents analysis
+                    goal_preset=getattr(agent, 'goal_prompt', '')[:50] if hasattr(agent, 'goal_prompt') else "",
+                    nearby_agents_critical=decision_data.get("nearby_agents_critical", 0),
+                    nearby_agents_struggling=decision_data.get("nearby_agents_struggling", 0),
+                    nearby_agents_total=decision_data.get("nearby_agents_total", 0),
                 )
                 self.debug_logger.log_llm_interaction(llm_interaction)
 
