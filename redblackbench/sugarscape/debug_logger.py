@@ -102,6 +102,9 @@ class TradeRecord:
     trust_b_to_a_before: float = 0.5
     trust_b_to_a_after: float = 0.5
 
+    # Full conversation (for dialogue trades)
+    conversation: List[Dict[str, Any]] = field(default_factory=list)
+
 
 @dataclass
 class DeathRecord:
@@ -290,7 +293,7 @@ class DebugLogger:
             if trade.agent_b_id in self._agent_lifetime_stats:
                 self._agent_lifetime_stats[trade.agent_b_id]["total_trades"] += 1
 
-        # Write to CSV
+        # Write to CSV (summary)
         with open(self.output_dir / "trade_history.csv", "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -301,6 +304,11 @@ class DebugLogger:
                 f"{trade.welfare_a_after:.2f}", f"{trade.welfare_b_before:.2f}",
                 f"{trade.welfare_b_after:.2f}"
             ])
+
+        # Write full trade dialogue to JSONL (includes conversation)
+        if trade.conversation:
+            with open(self.output_dir / "trade_dialogues.jsonl", "a") as f:
+                f.write(json.dumps(asdict(trade)) + "\n")
 
     def log_death(self, death: DeathRecord):
         """Log an agent death."""

@@ -15,7 +15,7 @@ from redblackbench.sugarscape.config import SugarscapeConfig
 def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        model: str = "moonshotai/kimi-k2-thinking",
                        population: int = 50, width: int = 50, height: int = 50,
-                       difficulty: str = "standard", trade_rounds: int = 4):
+                       difficulty: str = "standard", trade_rounds: int = 2):
     """Run a single experiment with a specific goal preset."""
 
     print(f"\n{'='*60}")
@@ -35,7 +35,12 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         llm_goal_preset=goal_preset,
         enable_spice=True,
         enable_trade=True,  # Enable trade for goal experiments
-        trade_dialogue_rounds=trade_rounds
+        trade_dialogue_rounds=trade_rounds,
+        # Trade robustness features to reduce timeouts
+        trade_dialogue_repair_json=True,
+        trade_dialogue_repair_attempts=2,
+        trade_dialogue_coerce_protocol=True,  # Force valid actions to prevent timeouts
+        trade_dialogue_two_stage=True,
     )
 
     # Apply difficulty preset
@@ -85,7 +90,7 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
 
 
 def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a22b-thinking",
-                  population=50, width=50, height=50, difficulty="standard", trade_rounds=4):
+                  population=50, width=50, height=50, difficulty="standard", trade_rounds=2):
     """Run experiments with multiple goal presets and compare results."""
 
     results = {}
@@ -187,7 +192,7 @@ def parse_args():
     parser.add_argument("--difficulty", type=str, choices=["standard", "easy", "harsh", "desert"],
                         default="standard", help="Difficulty preset")
 
-    parser.add_argument("--trade-rounds", type=int, default=4,
+    parser.add_argument("--trade-rounds", type=int, default=2,
                         help="Maximum dialogue rounds during trade negotiations")
 
     parser.add_argument("--seed", type=int, default=42,

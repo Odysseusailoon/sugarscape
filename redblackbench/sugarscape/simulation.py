@@ -8,6 +8,7 @@ from redblackbench.sugarscape.agent import SugarAgent
 from redblackbench.sugarscape.llm_agent import LLMSugarAgent
 from redblackbench.sugarscape.experiment import ExperimentLogger, MetricsCalculator
 from redblackbench.sugarscape.trade import TradeSystem, DialogueTradeSystem
+from redblackbench.sugarscape.debug_logger import DebugLogger
 from redblackbench.providers.openrouter_provider import OpenRouterProvider
 from redblackbench.sugarscape.trajectory import SugarTrajectory, SugarActionRecord
 from redblackbench.sugarscape.names import NameGenerator
@@ -26,7 +27,23 @@ class SugarSimulation:
     
     def __init__(self, config: SugarscapeConfig = None, agent_factory=None, experiment_name: str = "baseline"):
         self.config = config or SugarscapeConfig()
-        self.env = SugarEnvironment(self.config)
+
+        # Experiment logging
+        self.logger = ExperimentLogger(experiment_type=experiment_name, config=self.config)
+
+        # Initialize Debug Logger
+        self.debug_logger = DebugLogger(
+            output_dir=self.logger.run_dir / "debug",
+            enable_decision_logs=self.config.debug_log_decisions,
+            enable_llm_logs=self.config.debug_log_llm,
+            enable_trade_logs=self.config.debug_log_trades,
+            enable_death_logs=self.config.debug_log_deaths,
+            enable_efficiency_logs=self.config.debug_log_efficiency,
+        )
+
+        # Create environment with debug logger
+        self.env = SugarEnvironment(self.config, debug_logger=self.debug_logger)
+
         self.trade_system = None
         if self.config.enable_trade:
             mode = (self.config.trade_mode or "mrs").strip().lower()
@@ -39,7 +56,7 @@ class SugarSimulation:
                 )
             else:
                 self.trade_system = TradeSystem(self.env)
-        
+
         # Initialize LLM Provider if enabled
         self.llm_provider = None
         if self.config.enable_llm_agents:
@@ -47,30 +64,27 @@ class SugarSimulation:
                 model=self.config.llm_provider_model,
                 max_tokens=2048  # Lowered from 4096 to save tokens as requested
             )
-        
+
         self.agents: List[SugarAgent] = []
         self.tick = 0
         self.next_agent_id = 1
         self.agent_factory = agent_factory or self._default_agent_factory
-        
+
         # Name generator for human-like names
         self.name_generator = NameGenerator(seed=self.config.seed)
-        
-        # Experiment logging
-        self.logger = ExperimentLogger(experiment_type=experiment_name, config=self.config)
-        
+
         # Trajectory Tracking
         self.trajectory = SugarTrajectory(
             run_id=self.logger.experiment_id,
             config=self.config.__dict__
         )
-        
+
         # Random number generator
         self.rng = random.Random(self.config.seed)
-        
+
         # Track initial population for welfare calculations
         self.initial_population = self.config.initial_population
-        
+
         self._init_population()
 
     def _generate_agent_name(self) -> str:
@@ -324,6 +338,23 @@ class SugarSimulation:
                 )
                 current_timestep.actions.append(action_record)
 
+                # Log LLM interaction to debug logger
+                from redblackbench.sugarscape.debug_logger import LLMInteraction
+                llm_interaction = LLMInteraction(
+                    tick=self.tick,
+                    agent_id=agent.agent_id,
+                    agent_name=agent.name,
+                    interaction_type="movement",
+                    system_prompt=decision_data.get("system_prompt", ""),
+                    user_prompt=decision_data.get("user_prompt", ""),
+                    raw_response=decision_data.get("raw_response", ""),
+                    parsed_action=str(target_pos) if target_pos else "",
+                    input_tokens=0,  # TODO: Extract from provider if available
+                    output_tokens=0,  # TODO: Extract from provider if available
+                    latency_ms=0.0,  # TODO: Track latency
+                )
+                self.debug_logger.log_llm_interaction(llm_interaction)
+
         # Re-shuffle not needed since we processed in groups, but good for next tick?
         # self.rng.shuffle(self.agents) # Done at start
         
@@ -365,11 +396,14 @@ class SugarSimulation:
             
         # Final snapshot
         self.save_snapshot(filename="final_state.json")
-        
+
         # Save Trajectory
         traj_filename = f"trajectory_{self.logger.experiment_id}.json"
         self.trajectory.save(self.logger.get_log_path(traj_filename))
-        
+
+        # Save debug summary
+        self.debug_logger.save_summary()
+
         # Generate welfare plots
         self._generate_plots()
             

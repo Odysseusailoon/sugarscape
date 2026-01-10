@@ -1,30 +1,34 @@
 import numpy as np
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, TYPE_CHECKING
 from redblackbench.sugarscape.config import SugarscapeConfig
 from redblackbench.sugarscape.agent import SugarAgent
 
+if TYPE_CHECKING:
+    from redblackbench.sugarscape.debug_logger import DebugLogger
+
 class SugarEnvironment:
     """The Sugarscape environment."""
-    
-    def __init__(self, config: SugarscapeConfig):
+
+    def __init__(self, config: SugarscapeConfig, debug_logger: Optional["DebugLogger"] = None):
         self.config = config
         self.width = config.width
         self.height = config.height
-        
+        self.debug_logger = debug_logger
+
         # Grid state
         # capacity: max sugar at each cell
         self.sugar_capacity = np.zeros((self.width, self.height), dtype=int)
         # amount: current sugar at each cell
         self.sugar_amount = np.zeros((self.width, self.height), dtype=int)
-        
+
         # Spice layers (initialized only if enabled)
         self.spice_capacity = np.zeros((self.width, self.height), dtype=int)
         self.spice_amount = np.zeros((self.width, self.height), dtype=int)
-        
+
         # Agent tracking
         # Map from (x, y) -> SugarAgent
         self.grid_agents: Dict[Tuple[int, int], SugarAgent] = {}
-        
+
         self._init_landscape()
         
     def _init_landscape(self):
