@@ -11,17 +11,26 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from redblackbench.sugarscape.simulation import SugarSimulation
 from redblackbench.sugarscape.config import SugarscapeConfig
 
+# Default model paths
+QWEN3_14B_BASE = "/workspace/models/Qwen3-14B"
+QWEN3_14B_LORA = "/workspace/models/Qwen3-14B-LoRA"  # For fine-tuned experiments
+
 
 def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
-                       model: str = "moonshotai/kimi-k2-thinking",
-                       population: int = 50, width: int = 50, height: int = 50,
-                       difficulty: str = "standard", trade_rounds: int = 2,
-                       provider: str = "openrouter"):
+                       model: str = QWEN3_14B_BASE,
+                       population: int = 100, width: int = 30, height: int = 30,
+                       difficulty: str = "standard", trade_rounds: int = 4,
+                       provider: str = "vllm", use_lora: bool = False):
     """Run a single experiment with a specific goal preset."""
 
     print(f"\n{'='*60}")
     print(f"Running Goal Experiment: {goal_preset.upper()}")
     print(f"{'='*60}")
+
+    # Use LoRA model if specified
+    if use_lora:
+        model = QWEN3_14B_LORA
+        print(f"Using LoRA fine-tuned model: {model}")
 
     # Configure simulation
     config = SugarscapeConfig(
@@ -64,6 +73,8 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
 
     print(f"Goal: {goal_preset}")
     print(f"Goal Prompt: {config.llm_goal_prompt[:100]}...")
+    print(f"Grid: {width}x{height} ({width*height} cells)")
+    print(f"Population: {population} agents ({population/(width*height)*100:.1f}% density)")
     print(f"Seed: {seed}, Ticks: {ticks}")
 
     sim = SugarSimulation(config=config, experiment_name=f"goal_{goal_preset}")
@@ -99,9 +110,9 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
     return sim.logger.run_dir, final_stats
 
 
-def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a22b-thinking",
-                  population=50, width=50, height=50, difficulty="standard", trade_rounds=2,
-                  provider="openrouter"):
+def compare_goals(goals_to_test, ticks=100, seed=42, model=QWEN3_14B_BASE,
+                  population=100, width=30, height=30, difficulty="standard",
+                  trade_rounds=4, provider="vllm", use_lora=False):
     """Run experiments with multiple goal presets and compare results."""
 
     results = {}
@@ -113,7 +124,10 @@ def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a
 
     for goal in goals_to_test:
         try:
-            run_dir, final_stats = run_goal_experiment(goal, ticks, seed, model, population, width, height, difficulty, trade_rounds, provider)
+            run_dir, final_stats = run_goal_experiment(
+                goal, ticks, seed, model, population, width, height,
+                difficulty, trade_rounds, provider, use_lora
+            )
             results[goal] = {
                 'run_dir': run_dir,
                 'final_stats': final_stats
@@ -127,16 +141,13 @@ def compare_goals(goals_to_test, ticks=100, seed=42, model="qwen/qwen3-vl-235b-a
     print("COMPARISON SUMMARY")
     print(f"{'='*80}")
 
-    print("<30")
+    print(f"{'Goal':<12}{'Pop':>8}{'Welfare':>12}{'Nash':>12}{'Gini':>12}")
     print("-" * 80)
 
     for goal, data in results.items():
         stats = data['final_stats']
-        print("<12"
-               "<8.2f"
-               "<12.2f"
-               "<12.2f"
-               "<12.2f")
+        print(f"{goal:<12}{stats['population']:>8}{stats['utilitarian_welfare']:>12.2f}"
+              f"{stats['nash_welfare']:>12.2f}{stats['welfare_gini']:>12.3f}")
 
     print("-" * 80)
 
@@ -184,27 +195,21 @@ def parse_args():
                         help="Goal presets to test (altruist = merged egalitarian/utilitarian/samaritan)")
 
     parser.add_argument("--ticks", type=int, default=100,
-                        help="Number of simulation ticks")
+                        help="Number of simulation ticks (default: 100)")
 
-    parser.add_argument("--model", type=str,
-                        choices=["moonshotai/kimi-k2-thinking", "qwen/qwen3-30b-a3b-thinking-2507",
-                                "qwen/qwen3-vl-235b-a22b-thinking", "qwen/qwen3-vl-8b-thinking",
-                                "qwen/qwen3-next-80b-a3b-thinking", "baidu/ernie-4.5-21b-a3b-thinking",
-                                "thudm/glm-4.1v-9b-thinking"],
-                        default="moonshotai/kimi-k2-thinking",
-                        help="OpenRouter thinking model for LLM agents")
+    parser.add_argument("--population", type=int, default=100,
+                        help="Initial population size (default: 100)")
 
-    parser.add_argument("--population", type=int, default=50,
-                        help="Initial population size")
-
-    parser.add_argument("--width", type=int, default=50, help="Grid width")
-    parser.add_argument("--height", type=int, default=50, help="Grid height")
+    parser.add_argument("--width", type=int, default=30,
+                        help="Grid width (default: 30)")
+    parser.add_argument("--height", type=int, default=30,
+                        help="Grid height (default: 30)")
 
     parser.add_argument("--difficulty", type=str, choices=["standard", "easy", "harsh", "desert"],
                         default="standard", help="Difficulty preset")
 
-    parser.add_argument("--trade-rounds", type=int, default=2,
-                        help="Maximum dialogue rounds during trade negotiations")
+    parser.add_argument("--trade-rounds", type=int, default=4,
+                        help="Maximum dialogue rounds during trade negotiations (default: 4)")
 
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
@@ -214,10 +219,16 @@ def parse_args():
                         help="Run single goal experiment (overrides --goals)")
 
     parser.add_argument("--provider", type=str, choices=["openrouter", "vllm"],
-                        default="openrouter", help="LLM provider to use")
+                        default="vllm", help="LLM provider to use (default: vllm)")
+
+    parser.add_argument("--model", type=str, default=QWEN3_14B_BASE,
+                        help=f"Model path for vLLM (default: {QWEN3_14B_BASE})")
+
+    parser.add_argument("--lora", action="store_true",
+                        help="Use LoRA fine-tuned model instead of base model")
 
     parser.add_argument("--smoke-test", action="store_true",
-                        help="Quick smoke test: 5 ticks, 5 agents, single goal")
+                        help="Quick smoke test: 5 ticks, 10 agents on 10x10 grid")
 
     return parser.parse_args()
 
@@ -231,13 +242,17 @@ def main():
         print("SMOKE TEST MODE")
         print("="*60)
         args.ticks = 5
-        args.population = 5
+        args.population = 10
+        args.width = 10
+        args.height = 10
         args.single = "survival"
-        print(f"Running quick test: {args.ticks} ticks, {args.population} agents, goal={args.single}")
+        print(f"Running quick test: {args.ticks} ticks, {args.population} agents on {args.width}x{args.height} grid")
 
     # Determine model based on provider
     if args.provider == "vllm":
-        model = "/workspace/models/Qwen3-14B"
+        model = args.model
+        if args.lora:
+            model = QWEN3_14B_LORA
         print(f"Using vLLM provider with model: {model}")
     else:
         # Check for API key
@@ -252,14 +267,13 @@ def main():
         # Run single experiment
         run_goal_experiment(args.single, args.ticks, args.seed, model,
                           args.population, args.width, args.height, args.difficulty,
-                          args.trade_rounds, args.provider)
+                          args.trade_rounds, args.provider, args.lora)
     else:
         # Run comparison
         compare_goals(args.goals, args.ticks, args.seed, model,
                      args.population, args.width, args.height, args.difficulty,
-                     args.trade_rounds, args.provider)
+                     args.trade_rounds, args.provider, args.lora)
 
 
 if __name__ == "__main__":
     main()
-

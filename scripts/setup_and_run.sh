@@ -32,10 +32,10 @@ set -e  # Exit on error
 HF_BASE_MODEL="${HF_BASE_MODEL:-Qwen/Qwen3-14B}"
 HF_LORA_ADAPTER="${HF_LORA_ADAPTER:-spacezenmasterr/redblackbench-qwen3-14b-sft-v2}"
 
-# Local storage paths
-LOCAL_MODEL_DIR="${LOCAL_MODEL_DIR:-./models}"
+# Local storage paths (use /workspace/models for consistency)
+LOCAL_MODEL_DIR="${LOCAL_MODEL_DIR:-/workspace/models}"
 BASE_MODEL_NAME="Qwen3-14B"
-LORA_ADAPTER_NAME="redblackbench-qwen3-14b-sft-v2"
+LORA_ADAPTER_NAME="Qwen3-14B-LoRA"
 
 # vLLM server settings
 VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
@@ -43,8 +43,9 @@ VLLM_PORT="${VLLM_PORT:-8000}"
 GPU_MEMORY="${GPU_MEMORY:-0.9}"
 MAX_LORA_RANK="${MAX_LORA_RANK:-128}"
 
-# Experiment settings (use SFT version by default)
-EXPERIMENT_SCRIPT="${EXPERIMENT_SCRIPT:-scripts/run_goal_experiment_sft.py}"
+# Experiment settings
+# Default: run_goal_experiment.py (100 agents, 30x30 grid, vLLM)
+EXPERIMENT_SCRIPT="${EXPERIMENT_SCRIPT:-scripts/run_goal_experiment.py}"
 
 #=============================================================================
 # COLORS FOR OUTPUT
@@ -417,15 +418,23 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  setup     Install Python dependencies (pip packages)"
-    echo "  download  Download models from HuggingFace"
+    echo "  download  Download Qwen3-14B base model + LoRA adapter"
     echo "  server    Start vLLM server (foreground)"
     echo "  start     Start vLLM server (background)"
     echo "  stop      Stop background vLLM server"
-    echo "  run       Run sugarscape experiment (SFT v2 model)"
-    echo "  run-base  Run sugarscape experiment (base model)"
+    echo "  run       Run sugarscape experiment (base model)"
+    echo "  run-lora  Run sugarscape experiment (LoRA fine-tuned model)"
+    echo "  smoke     Quick smoke test (10 agents, 5 ticks)"
     echo "  all       Do everything (setup + download + start + run)"
     echo "  status    Check if vLLM server is running"
     echo "  help      Show this help message"
+    echo ""
+    echo "Default Experiment Settings:"
+    echo "  Grid: 30x30 (900 cells)"
+    echo "  Population: 100 agents (11% density)"
+    echo "  Ticks: 100"
+    echo "  Trade rounds: 4"
+    echo "  Model: Qwen3-14B (vLLM)"
     echo ""
     echo "Environment Variables:"
     echo "  HF_BASE_MODEL     HuggingFace path for base model (default: $HF_BASE_MODEL)"
@@ -436,16 +445,17 @@ show_help() {
     echo "  HF_TOKEN          HuggingFace token (for private repos)"
     echo ""
     echo "Examples:"
-    echo "  # Full setup with custom model paths"
-    echo "  HF_BASE_MODEL=Qwen/Qwen2.5-14B-Instruct \\"
-    echo "  HF_LORA_ADAPTER=myuser/my-lora \\"
-    echo "  $0 all"
+    echo "  # One-time setup"
+    echo "  $0 setup      # Install dependencies"
+    echo "  $0 download   # Download Qwen3-14B + LoRA"
     echo ""
-    echo "  # Just start the server"
+    echo "  # Start server with LoRA support"
     echo "  $0 start"
     echo ""
-    echo "  # Run experiment (server must be running)"
-    echo "  $0 run"
+    echo "  # Run experiments"
+    echo "  $0 run        # Base model experiment"
+    echo "  $0 run-lora   # LoRA fine-tuned experiment"
+    echo "  $0 smoke      # Quick smoke test"
 }
 
 show_status() {
@@ -508,10 +518,26 @@ case "${1:-help}" in
         stop_server
         ;;
     run)
+        # Run with base model (default: 100 agents, 30x30 grid)
         run_experiment
         ;;
-    run-base)
-        EXPERIMENT_SCRIPT="scripts/run_goal_experiment.py" run_experiment
+    run-lora)
+        # Run with LoRA fine-tuned model
+        print_header "Running Experiment with LoRA Model"
+        if ! check_server_running; then
+            print_error "vLLM server is not running on port $VLLM_PORT"
+            exit 1
+        fi
+        python3 scripts/run_goal_experiment.py --lora
+        ;;
+    smoke)
+        # Quick smoke test
+        print_header "Running Smoke Test"
+        if ! check_server_running; then
+            print_error "vLLM server is not running on port $VLLM_PORT"
+            exit 1
+        fi
+        python3 scripts/run_goal_experiment.py --smoke-test
         ;;
     all)
         run_all
