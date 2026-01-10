@@ -233,17 +233,18 @@ class DialogueTradeSystem:
         self._run_negotiate_pairs_parallel(llm_pairs, tick_value)
 
     def _run_negotiate_pairs_parallel(self, pairs: List[Tuple[SugarAgent, SugarAgent]], tick: int) -> None:
-        """Run all trade negotiations in parallel using asyncio.gather."""
+        """Run all trade negotiations in parallel using asyncio.gather.
+
+        Uses the persistent event loop set by SugarSimulation for better
+        throughput via connection reuse.
+        """
         async def negotiate_all():
             tasks = [self._negotiate_pair_safe(a, b, tick) for a, b in pairs]
             await asyncio.gather(*tasks)
 
-        try:
-            asyncio.run(negotiate_all())
-        except RuntimeError:
-            # If a loop is already running, use it
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(negotiate_all())
+        # Use the persistent event loop (set by SugarSimulation)
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(negotiate_all())
 
     async def _negotiate_pair_safe(self, a: SugarAgent, b: SugarAgent, tick: int) -> None:
         """Wrapper for _negotiate_pair that catches exceptions to avoid crashing other parallel trades."""
@@ -322,6 +323,8 @@ class DialogueTradeSystem:
                 )
 
             memory_summary = self._format_partner_memory(speaker, listener)
+            # Get speaker's goal prompt for altruist-specific hints
+            speaker_goal = getattr(speaker, 'goal_prompt', '') or ''
             turn_prompt = build_sugarscape_trade_turn_prompt(
                 self_agent=speaker,
                 partner_agent=listener,
@@ -331,6 +334,7 @@ class DialogueTradeSystem:
                 partner_last_public_offer=partner_last_public_offer,
                 partner_memory_summary=memory_summary,
                 env=self.env,
+                self_goal_prompt=speaker_goal,
             )
 
             # Two-stage mode: Stage 1 (thinking) → Stage 2 (JSON output)

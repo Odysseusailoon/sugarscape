@@ -3,6 +3,7 @@
 Provides integration with vLLM inference servers through OpenAI-compatible API.
 """
 
+import asyncio
 import os
 from typing import List, Optional
 
@@ -56,6 +57,7 @@ class VLLMProvider(BaseLLMProvider):
         # Shared client for connection reuse and proper batching
         # Lazily initialized on first generate() call
         self._client = None
+        self._owns_client = True  # Track if we created the client
 
     @property
     def provider_name(self) -> str:
@@ -112,6 +114,35 @@ class VLLMProvider(BaseLLMProvider):
         )
 
         return response.choices[0].message.content or ""
+
+    async def aclose(self) -> None:
+        """Async close the underlying HTTP client.
+
+        Call this when done with the provider to properly clean up connections.
+        """
+        if self._client is not None and self._owns_client:
+            await self._client.close()
+            self._client = None
+
+    def close(self) -> None:
+        """Synchronous close - schedules async cleanup.
+
+        For use when an event loop is available but we're in sync context.
+        """
+        if self._client is not None and self._owns_client:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Schedule cleanup for later
+                    loop.create_task(self.aclose())
+                elif not loop.is_closed():
+                    loop.run_until_complete(self.aclose())
+                else:
+                    # Loop is closed, force cleanup
+                    self._client = None
+            except RuntimeError:
+                # No event loop available, just clear the reference
+                self._client = None
 
 
 # Convenience factory functions

@@ -21,7 +21,7 @@ class SugarscapeConfig:
     
     # Trade (Optional)
     enable_trade: bool = False
-    trade_mode: str = "mrs"  # "mrs" | "dialogue"
+    trade_mode: str = "dialogue"  # "dialogue" | "mrs"
     trade_dialogue_rounds: int = 4
     trade_allow_fraud: bool = True
     trade_memory_maxlen: int = 50
@@ -89,27 +89,70 @@ class SugarscapeConfig:
         goals = {
             "none": """You are a person living in this world. You decide what matters to you.""",
 
-            "survival": """You want to live. Stay alive as long as you can.
-You need both Sugar and Spice - if either runs out, you die.
-When you're low on one, find it or trade for it.""",
+            "survival": """Your goal: Stay alive as long as possible.
 
-            "wealth": """You want to be prosperous. Accumulate as much as you can.
-Both Sugar and Spice make you wealthy. The more you have of both, the better off you are.
-Seek abundance, but remember you need both to thrive.""",
+DECISION PRIORITY:
+1. CRITICAL: If you're CRITICAL on anything, fix it immediately - move to resources
+2. LOW: Build safety buffer before anything else
+3. OK/SURPLUS: Maintain reserves, avoid unnecessary risks
 
-            "altruist": """You care about others. You believe everyone deserves to live.
+MOVEMENT:
+- Always move toward the best resources for YOUR needs
+- Avoid cells with low resources even if others are there
+- Other agents are potential trade partners, not priorities
 
-When you see someone struggling - low on Sugar or Spice - you want to help them. When you have plenty and others have little, sharing feels right. You'd rather live modestly in a world where everyone survives than live richly while others starve.
+TRADING:
+- Only trade if it improves YOUR survival odds
+- Don't accept bad deals even if others need help
+- Your life comes first
 
-In trades, you think about whether the other person needs this more than you. If they're desperate for Spice and you have extra, maybe give them a good deal.
+SUCCESS = You survive. Measured by how long YOU stay alive.""",
 
-You stay alive because you can do more good alive than dead.""",
+            "wealth": """Your goal: Accumulate maximum resources.
+
+DECISION PRIORITY:
+1. CRITICAL: Fix immediate danger (can't get rich if dead)
+2. Otherwise: Always move to highest-yield cells
+3. Take calculated risks for bigger gains
+
+MOVEMENT:
+- Prioritize cells with MOST resources, not safest cells
+- Move aggressively toward abundance
+- Other agents may have resources to trade - approach if profitable
+
+TRADING:
+- Trade when it increases YOUR total holdings
+- Drive hard bargains - maximize what you get
+- Their situation is not your concern
+
+SUCCESS = Maximum wealth. Measured by YOUR Sugar + Spice totals.""",
+
+            "altruist": """Your goal: Everyone survives, including yourself.
+
+DECISION PRIORITY:
+1. CRITICAL SELF: Save yourself first (dead helpers can't help)
+2. CRITICAL OTHER: See someone CRITICAL? Move toward them to help
+3. SURPLUS SELF + LOW OTHER: Seek out struggling agents
+4. Otherwise: Gather resources for future helping
+
+MOVEMENT:
+- When comfortable, prioritize moving toward struggling agents
+- Check agent status: CRITICAL means they'll die soon without help
+- A good position near someone in need beats a great position alone
+
+TRADING:
+- If they're worse off than you: Give favorable terms
+- If they're CRITICAL: Accept bad deals to save them
+- Your wealth means nothing if others starve
+
+SUCCESS = Everyone survives. Measured by group welfare, especially the worst-off.""",
         }
 
         # Aliases for backward compatibility
         goals["egalitarian"] = goals["altruist"]
         goals["utilitarian"] = goals["altruist"]
         goals["samaritan"] = goals["altruist"]
+        goals["rawlsian"] = goals["altruist"]
 
         if preset in goals:
             return goals[preset]

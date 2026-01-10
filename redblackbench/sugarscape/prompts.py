@@ -137,10 +137,37 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
         sugar_amt = env.get_sugar_at(pos)
         sugar_desc = describe_resource_amount(sugar_amt, "Sugar")
         
-        # Check for other agents
+        # Check for other agents - show their resource status for altruism
         other_agent = env.get_agent_at(pos)
         if other_agent and other_agent != agent:
-            occupancy = f" [Agent {other_agent.name} present]"
+            # Calculate their urgency status
+            other_sugar_time = int(other_agent.wealth / other_agent.metabolism) if other_agent.metabolism > 0 else 999
+            other_spice_time = int(other_agent.spice / other_agent.metabolism_spice) if other_agent.metabolism_spice > 0 else 999
+            other_min_time = min(other_sugar_time, other_spice_time)
+
+            if other_min_time < 3:
+                urgency = "CRITICAL"
+            elif other_min_time < 10:
+                urgency = "struggling"
+            else:
+                urgency = "stable"
+
+            # Get reputation for social decision-making
+            reputation = env.get_agent_reputation(other_agent.agent_id, 0.5)
+            if reputation >= 0.7:
+                rep_desc = "trusted"
+            elif reputation >= 0.4:
+                rep_desc = ""  # neutral, don't mention
+            else:
+                rep_desc = "untrusted"
+
+            rep_str = f", {rep_desc}" if rep_desc else ""
+
+            # Show their actual resources so altruistic agents can help
+            if env.config.enable_spice:
+                occupancy = f" [Agent {other_agent.name} - {urgency}: Sugar {int(other_agent.wealth)}, Spice {int(other_agent.spice)}{rep_str}]"
+            else:
+                occupancy = f" [Agent {other_agent.name} - {urgency}: Sugar {int(other_agent.wealth)}{rep_str}]"
         elif other_agent == agent:
             occupancy = " [Current position]"
         else:
@@ -239,6 +266,7 @@ def build_sugarscape_trade_turn_prompt(
     partner_last_public_offer: str,
     partner_memory_summary: str,
     env: SugarEnvironment = None,
+    self_goal_prompt: str = "",
 ) -> str:
     """Build the per-turn user prompt for trade negotiation."""
 
@@ -269,8 +297,14 @@ def build_sugarscape_trade_turn_prompt(
     partner_spice_time = int(partner_agent.spice / partner_agent.metabolism_spice) if partner_agent.metabolism_spice > 0 else 999
     partner_min_time = min(partner_sugar_time, partner_spice_time)
 
+    # Check if self is altruist (for gift hint)
+    is_altruist = any(kw in self_goal_prompt.lower() for kw in ["care about others", "help", "altruist", "everyone deserves"])
+
     if partner_min_time < 3:
         partner_urgency = "CRITICAL - they may die soon without resources"
+        # Only altruists see the gift hint - saves tokens for others
+        if is_altruist:
+            partner_urgency += "\n  → You can GIVE freely: offer resources with receive={sugar:0, spice:0}"
     elif partner_min_time < 10:
         partner_urgency = "struggling - they need resources"
     else:

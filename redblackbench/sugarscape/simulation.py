@@ -1,3 +1,4 @@
+import asyncio
 import random
 import pickle
 from pathlib import Path
@@ -94,6 +95,12 @@ class SugarSimulation:
 
         # Track initial population for welfare calculations
         self.initial_population = self.config.initial_population
+
+        # Create persistent event loop for async operations (LLM calls, trades)
+        # This avoids repeated asyncio.run() calls which create/destroy loops
+        # and cause cleanup issues with persistent HTTP clients
+        self._event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._event_loop)
 
         self._init_population()
 
@@ -222,18 +229,16 @@ class SugarSimulation:
                 
         # Phase 1b. Process LLM Agents: parallelize decisions, then apply Move + Harvest
         if llm_agents:
-            import asyncio
-            
             async def get_decisions():
                 tasks = []
                 for agent in llm_agents:
                     tasks.append(agent.async_decide_move(self.env))
                 return await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Run all decisions in parallel
+
+            # Run all decisions in parallel using persistent event loop
             # Note: LLM agents see state after standard agents' movement/harvest,
             # but before other LLM agents' moves are applied.
-            decisions = asyncio.run(get_decisions())
+            decisions = self._event_loop.run_until_complete(get_decisions())
             
             # Apply decisions with a batched collision policy for LLM agents:
             # - Single occupancy per cell.
@@ -435,7 +440,10 @@ class SugarSimulation:
 
         # Generate welfare plots
         self._generate_plots()
-            
+
+        # Clean up async resources
+        self._cleanup_async()
+
     def save_snapshot(self, filename: str):
         """Save current simulation state."""
         data = {
@@ -489,7 +497,44 @@ class SugarSimulation:
             print(f"✓ Generated welfare plots in: {self.logger.get_plots_dir()}")
         except Exception as e:
             print(f"Warning: Could not generate plots: {e}")
-            
+
+    def _cleanup_async(self) -> None:
+        """Clean up async resources (event loop, LLM provider connections).
+
+        This prevents 'Event loop is closed' errors by properly closing
+        the HTTP client before the event loop is closed.
+        """
+        # Close LLM provider's HTTP client
+        if self.llm_provider is not None and hasattr(self.llm_provider, 'aclose'):
+            try:
+                self._event_loop.run_until_complete(self.llm_provider.aclose())
+            except Exception as e:
+                print(f"Warning: Error closing LLM provider: {e}")
+
+        # Close the event loop
+        if self._event_loop is not None and not self._event_loop.is_closed():
+            try:
+                # Cancel any pending tasks
+                pending = asyncio.all_tasks(self._event_loop)
+                for task in pending:
+                    task.cancel()
+                # Give cancelled tasks a chance to finish
+                if pending:
+                    self._event_loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                self._event_loop.close()
+            except Exception as e:
+                print(f"Warning: Error closing event loop: {e}")
+
+    def close(self) -> None:
+        """Explicitly close simulation resources.
+
+        Call this if you need to clean up before the simulation completes
+        normally (e.g., on error or early termination).
+        """
+        self._cleanup_async()
+
     def get_stats(self) -> Dict[str, Any]:
         """Get current statistics including welfare metrics."""
         wealths = [a.wealth for a in self.agents]
@@ -684,6 +729,10 @@ class SugarSimulation:
         # Agent factory
         sim.agent_factory = lambda **kwargs: SugarAgent(**kwargs)
 
+        # Create persistent event loop for async operations
+        sim._event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(sim._event_loop)
+
         # Trajectory (new for resumed run)
         sim.trajectory = SugarTrajectory(
             run_id=sim.logger.experiment_id,
@@ -770,5 +819,8 @@ class SugarSimulation:
 
         # Generate welfare plots
         self._generate_plots()
+
+        # Clean up async resources
+        self._cleanup_async()
 
         print(f"Simulation complete: {start_tick} -> {self.tick} ({limit} steps)")
