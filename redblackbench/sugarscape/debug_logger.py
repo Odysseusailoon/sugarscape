@@ -63,6 +63,14 @@ class LLMInteraction:
     output_tokens: int = 0
     latency_ms: float = 0.0
 
+    # Agent's goal preset for filtering analysis
+    goal_preset: str = ""  # "survival", "altruist", "wealth", etc.
+
+    # Nearby agents visibility - for analyzing response to others' needs
+    nearby_agents_critical: int = 0  # Count of CRITICAL agents visible
+    nearby_agents_struggling: int = 0  # Count of struggling agents visible
+    nearby_agents_total: int = 0  # Total agents visible
+
 
 @dataclass
 class TradeRecord:
@@ -119,6 +127,16 @@ class TradeRecord:
     reputation_a_after: float = 0.5
     reputation_b_before: float = 0.5
     reputation_b_after: float = 0.5
+
+    # Goal presets - for analyzing behavior by goal type
+    agent_a_goal: str = ""  # "survival", "altruist", "wealth", "none", etc.
+    agent_b_goal: str = ""
+
+    # Gift detection - for measuring altruistic giving
+    is_gift_a: bool = False  # A gave with receive={0,0} (one-sided gift)
+    is_gift_b: bool = False  # B gave with receive={0,0}
+    gift_hint_shown_a: bool = False  # Was altruist gift hint displayed to A
+    gift_hint_shown_b: bool = False  # Was altruist gift hint displayed to B
 
 
 @dataclass
@@ -239,7 +257,10 @@ class DebugLogger:
                     "agent_a_location", "agent_b_location",
                     "agent_a_pos", "agent_b_pos",
                     "reputation_a_before", "reputation_a_after",
-                    "reputation_b_before", "reputation_b_after"
+                    "reputation_b_before", "reputation_b_after",
+                    "agent_a_goal", "agent_b_goal",
+                    "is_gift_a", "is_gift_b",
+                    "gift_hint_shown_a", "gift_hint_shown_b"
                 ])
 
         if self.enable_death_logs:
@@ -332,7 +353,10 @@ class DebugLogger:
                     trade.agent_a_location, trade.agent_b_location,
                     str(trade.agent_a_pos), str(trade.agent_b_pos),
                     f"{trade.reputation_a_before:.3f}", f"{trade.reputation_a_after:.3f}",
-                    f"{trade.reputation_b_before:.3f}", f"{trade.reputation_b_after:.3f}"
+                    f"{trade.reputation_b_before:.3f}", f"{trade.reputation_b_after:.3f}",
+                    trade.agent_a_goal, trade.agent_b_goal,
+                    trade.is_gift_a, trade.is_gift_b,
+                    trade.gift_hint_shown_a, trade.gift_hint_shown_b
                 ])
 
             # Write full trade dialogue to JSONL (includes conversation)
@@ -407,6 +431,25 @@ class DebugLogger:
 
         deception_count = sum(1 for t in self.trades if t.deception_detected)
 
+        # Gift statistics
+        gift_count = sum(1 for t in self.trades if t.is_gift_a or t.is_gift_b)
+        gift_hint_shown_count = sum(1 for t in self.trades if t.gift_hint_shown_a or t.gift_hint_shown_b)
+
+        # Trades by goal preset
+        trades_by_goal = {}
+        for t in self.trades:
+            for goal in [t.agent_a_goal, t.agent_b_goal]:
+                if goal:
+                    trades_by_goal[goal] = trades_by_goal.get(goal, 0) + 1
+
+        # Gifts by goal (did altruists actually give?)
+        gifts_by_goal = {}
+        for t in self.trades:
+            if t.is_gift_a and t.agent_a_goal:
+                gifts_by_goal[t.agent_a_goal] = gifts_by_goal.get(t.agent_a_goal, 0) + 1
+            if t.is_gift_b and t.agent_b_goal:
+                gifts_by_goal[t.agent_b_goal] = gifts_by_goal.get(t.agent_b_goal, 0) + 1
+
         avg_efficiency = 0.0
         if self.efficiency_records:
             avg_efficiency = sum(e.gather_efficiency for e in self.efficiency_records) / len(self.efficiency_records)
@@ -417,6 +460,10 @@ class DebugLogger:
             "total_trades": len(self.trades),
             "trade_outcomes": trade_outcomes,
             "deception_count": deception_count,
+            "gift_count": gift_count,
+            "gift_hint_shown_count": gift_hint_shown_count,
+            "trades_by_goal": trades_by_goal,
+            "gifts_by_goal": gifts_by_goal,
             "total_deaths": len(self.deaths),
             "death_causes": death_causes,
             "avg_resource_efficiency": avg_efficiency

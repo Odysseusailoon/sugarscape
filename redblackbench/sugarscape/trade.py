@@ -952,6 +952,31 @@ class DialogueTradeSystem:
             sugar_exchanged = offerer_sent.get("sugar", 0)
             spice_exchanged = offerer_sent.get("spice", 0)
 
+            # Get goal presets for analysis
+            offerer_goal = getattr(offerer, 'goal_prompt', '') or ''
+            acceptor_goal = getattr(acceptor, 'goal_prompt', '') or ''
+
+            # Detect gifts (giving with nothing in return)
+            contract_receive_offerer = public_contract.get("receive", {})
+            contract_receive_acceptor = public_contract.get("give", {})
+            is_gift_offerer = (
+                (offerer_sent.get("sugar", 0) > 0 or offerer_sent.get("spice", 0) > 0) and
+                contract_receive_offerer.get("sugar", 0) == 0 and
+                contract_receive_offerer.get("spice", 0) == 0
+            )
+            is_gift_acceptor = (
+                (acceptor_sent.get("sugar", 0) > 0 or acceptor_sent.get("spice", 0) > 0) and
+                contract_receive_acceptor.get("sugar", 0) == 0 and
+                contract_receive_acceptor.get("spice", 0) == 0
+            )
+
+            # Check if gift hint was shown (altruist + partner CRITICAL)
+            altruist_keywords = ["care about others", "help", "altruist", "everyone deserves"]
+            offerer_is_altruist = any(kw in offerer_goal.lower() for kw in altruist_keywords)
+            acceptor_is_altruist = any(kw in acceptor_goal.lower() for kw in altruist_keywords)
+            gift_hint_offerer = offerer_is_altruist and acceptor_urgency == "CRITICAL"
+            gift_hint_acceptor = acceptor_is_altruist and offerer_urgency == "CRITICAL"
+
             trade_record = TradeRecord(
                 tick=tick,
                 agent_a_id=offerer.agent_id,
@@ -971,7 +996,7 @@ class DialogueTradeSystem:
                 welfare_b_before=welfare_acceptor_before,
                 welfare_b_after=welfare_acceptor_after,
                 conversation=conversation or [],
-                # New fields for reputation/urgency/location
+                # Reputation/urgency/location
                 agent_a_urgency=offerer_urgency,
                 agent_b_urgency=acceptor_urgency,
                 agent_a_location=offerer_location,
@@ -982,6 +1007,13 @@ class DialogueTradeSystem:
                 reputation_a_after=rep_offerer_after,
                 reputation_b_before=rep_acceptor_before,
                 reputation_b_after=rep_acceptor_after,
+                # Goal and gift tracking
+                agent_a_goal=offerer_goal[:50],  # Truncate for CSV
+                agent_b_goal=acceptor_goal[:50],
+                is_gift_a=is_gift_offerer,
+                is_gift_b=is_gift_acceptor,
+                gift_hint_shown_a=gift_hint_offerer,
+                gift_hint_shown_b=gift_hint_acceptor,
             )
             self.env.debug_logger.log_trade(trade_record)
 
@@ -1025,6 +1057,21 @@ class DialogueTradeSystem:
             welfare_a = a.welfare
             welfare_b = b.welfare
 
+            # Get goal presets for analysis
+            goal_a = getattr(a, 'goal_prompt', '') or ''
+            goal_b = getattr(b, 'goal_prompt', '') or ''
+
+            # Get urgency for gift hint tracking
+            urgency_a = self._get_agent_urgency(a)
+            urgency_b = self._get_agent_urgency(b)
+
+            # Check if gift hint would have been shown
+            altruist_keywords = ["care about others", "help", "altruist", "everyone deserves"]
+            a_is_altruist = any(kw in goal_a.lower() for kw in altruist_keywords)
+            b_is_altruist = any(kw in goal_b.lower() for kw in altruist_keywords)
+            gift_hint_a = a_is_altruist and urgency_b == "CRITICAL"
+            gift_hint_b = b_is_altruist and urgency_a == "CRITICAL"
+
             trade_record = TradeRecord(
                 tick=tick,
                 agent_a_id=a.agent_id,
@@ -1044,6 +1091,13 @@ class DialogueTradeSystem:
                 welfare_b_before=welfare_b,
                 welfare_b_after=welfare_b,
                 conversation=conversation or [],
+                # Goal and gift tracking
+                agent_a_goal=goal_a[:50],
+                agent_b_goal=goal_b[:50],
+                is_gift_a=False,
+                is_gift_b=False,
+                gift_hint_shown_a=gift_hint_a,
+                gift_hint_shown_b=gift_hint_b,
             )
             self.env.debug_logger.log_trade(trade_record)
 
