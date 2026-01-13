@@ -27,6 +27,16 @@ class SugarAgent:
     persona: str = "A" # Default to Conservative
     name: str = ""
 
+    # === ORIGIN IDENTITY SYSTEM ===
+    # Fixed origin identity - IMMUTABLE (who you were "born" as)
+    origin_identity: str = ""  # "altruist" or "exploiter" - cannot change
+    origin_identity_prompt: str = ""  # Fixed text describing core values
+    
+    # Mutable identity appendix - CAN DRIFT through reflection
+    policy_list: List[str] = field(default_factory=list)  # Numbered rules that can be rewritten
+    belief_ledger: Dict[str, Any] = field(default_factory=dict)  # world/partner/norm beliefs
+    self_identity_leaning: float = 0.0  # -1.0 (strongly bad) to +1.0 (strongly good)
+
     # Non-init fields (runtime memory)
     trade_memory: Dict[int, Deque[Dict[str, Any]]] = field(default_factory=dict, init=False, repr=False)
     partner_trust: Dict[int, float] = field(default_factory=dict, init=False, repr=False)
@@ -76,7 +86,162 @@ class SugarAgent:
     def update_partner_trust(self, partner_id: int, new_value: float) -> None:
         """Set trust score for a partner, clamped to [0, 1]."""
         self.partner_trust[partner_id] = max(0.0, min(1.0, float(new_value)))
+
+    # === ORIGIN IDENTITY SYSTEM METHODS ===
     
+    def get_identity_label(self) -> str:
+        """Get a human-readable identity label based on current leaning."""
+        if self.self_identity_leaning > 0.3:
+            return "good-leaning"
+        elif self.self_identity_leaning < -0.3:
+            return "bad-leaning"
+        else:
+            return "mixed"
+    
+    def get_formatted_policies(self) -> str:
+        """Format policy list for prompt inclusion."""
+        if not self.policy_list:
+            return "(No explicit policies)"
+        return "\n".join(self.policy_list)
+    
+    def get_formatted_beliefs(self) -> str:
+        """Format belief ledger for prompt inclusion."""
+        if not self.belief_ledger:
+            return "(No recorded beliefs)"
+        
+        lines = []
+        if "world" in self.belief_ledger:
+            lines.append("World beliefs:")
+            for k, v in self.belief_ledger["world"].items():
+                lines.append(f"  - {k}: {v}")
+        if "norms" in self.belief_ledger:
+            lines.append("Norm beliefs:")
+            for k, v in self.belief_ledger["norms"].items():
+                lines.append(f"  - {k}: {v}")
+        if "self_assessment" in self.belief_ledger:
+            lines.append(f"Self-assessment: {self.belief_ledger['self_assessment']}")
+        return "\n".join(lines)
+    
+    def update_policy(self, policy_idx: int, new_policy: str) -> None:
+        """Update a specific policy by index (0-based)."""
+        if 0 <= policy_idx < len(self.policy_list):
+            self.policy_list[policy_idx] = new_policy
+    
+    def update_belief(self, category: str, key: str, value: str) -> None:
+        """Update a specific belief in the ledger."""
+        if category not in self.belief_ledger:
+            self.belief_ledger[category] = {}
+        self.belief_ledger[category][key] = value
+    
+    def update_partner_belief(self, partner_id: int, key: str, value: str) -> None:
+        """Update belief about a specific partner."""
+        if "partners" not in self.belief_ledger:
+            self.belief_ledger["partners"] = {}
+        if partner_id not in self.belief_ledger["partners"]:
+            self.belief_ledger["partners"][partner_id] = {}
+        self.belief_ledger["partners"][partner_id][key] = value
+    
+    def shift_identity_leaning(self, delta: float) -> None:
+        """Shift self-identity leaning, clamped to [-1, 1]."""
+        self.self_identity_leaning = max(-1.0, min(1.0, self.self_identity_leaning + delta))
+    
+    def apply_reflection_update(self, reflection_json: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a full reflection update from JSON output.
+        
+        Expected JSON structure:
+        {
+            "belief_updates": {
+                "world": {"key": "new_value", ...},      # World beliefs
+                "norms": {"key": "new_value", ...},      # Norm beliefs  
+                "partner_<id>": {"key": "new_value", ...} # Partner-specific
+            },
+            "policy_updates": {
+                "add": ["new rule 1", ...],              # New rules to add
+                "remove": [1, 3, ...],                   # Indices to remove (1-based)
+                "modify": {"1": "modified rule", ...}    # Modify by index (1-based)
+            },
+            "identity_shift": 0.1  # Delta to apply to self_identity_leaning
+        }
+        
+        Returns:
+            Dict summarizing what was changed for logging.
+        """
+        changes = {"beliefs_changed": [], "policies_changed": [], "identity_shifted": 0.0}
+        
+        # 1. Apply belief updates
+        belief_updates = reflection_json.get("belief_updates", {})
+        for category, updates in belief_updates.items():
+            if not isinstance(updates, dict):
+                continue
+            # Handle partner-specific beliefs (partner_123 -> partners/123)
+            if category.startswith("partner_"):
+                try:
+                    partner_id = int(category.split("_", 1)[1])
+                    for key, value in updates.items():
+                        self.update_partner_belief(partner_id, key, str(value))
+                        changes["beliefs_changed"].append(f"partner_{partner_id}.{key}")
+                except (ValueError, IndexError):
+                    continue
+            else:
+                # World or norm beliefs
+                for key, value in updates.items():
+                    self.update_belief(category, key, str(value))
+                    changes["beliefs_changed"].append(f"{category}.{key}")
+        
+        # 2. Apply policy updates
+        policy_updates = reflection_json.get("policy_updates", {})
+        
+        # 2a. Modify existing policies (do this first)
+        modify = policy_updates.get("modify", {})
+        if isinstance(modify, dict):
+            for idx_str, new_text in modify.items():
+                try:
+                    idx = int(idx_str) - 1  # Convert 1-based to 0-based
+                    if 0 <= idx < len(self.policy_list):
+                        old_policy = self.policy_list[idx]
+                        self.policy_list[idx] = str(new_text)
+                        changes["policies_changed"].append(f"modified #{idx+1}")
+                except (ValueError, TypeError):
+                    continue
+        
+        # 2b. Remove policies (in reverse order to preserve indices)
+        remove = policy_updates.get("remove", [])
+        if isinstance(remove, list):
+            indices_to_remove = []
+            for idx in remove:
+                try:
+                    idx_0based = int(idx) - 1  # Convert 1-based to 0-based
+                    if 0 <= idx_0based < len(self.policy_list):
+                        indices_to_remove.append(idx_0based)
+                except (ValueError, TypeError):
+                    continue
+            for idx in sorted(indices_to_remove, reverse=True):
+                del self.policy_list[idx]
+                changes["policies_changed"].append(f"removed #{idx+1}")
+        
+        # 2c. Add new policies
+        add = policy_updates.get("add", [])
+        if isinstance(add, list):
+            for new_policy in add:
+                if isinstance(new_policy, str) and new_policy.strip():
+                    # Number it based on current length
+                    numbered = f"{len(self.policy_list) + 1}. {new_policy.lstrip('0123456789. ')}"
+                    self.policy_list.append(numbered)
+                    changes["policies_changed"].append(f"added #{len(self.policy_list)}")
+        
+        # 3. Apply identity shift
+        identity_shift = reflection_json.get("identity_shift", 0.0)
+        try:
+            shift = float(identity_shift)
+            if shift != 0:
+                old_leaning = self.self_identity_leaning
+                self.shift_identity_leaning(shift)
+                changes["identity_shifted"] = shift
+        except (ValueError, TypeError):
+            pass
+        
+        return changes
+
     @property
     def welfare(self) -> float:
         """Calculate Cobb-Douglas Welfare/Utility."""
@@ -427,6 +592,12 @@ class SugarAgent:
             "persona": self.persona,
             "name": self.name,
             "alive": self.alive,
+            # Identity system (Born Good/Bad)
+            "origin_identity": self.origin_identity,
+            "origin_identity_prompt": self.origin_identity_prompt,
+            "policy_list": list(self.policy_list),
+            "belief_ledger": dict(self.belief_ledger),
+            "self_identity_leaning": self.self_identity_leaning,
             # Tracking state
             "initial_pos": self.initial_pos,
             "visited_cells": list(self.visited_cells),
@@ -449,6 +620,13 @@ class SugarAgent:
         self.spice = data["spice"]
         self.age = data["age"]
         self.alive = data["alive"]
+
+        # Identity system (Born Good/Bad)
+        self.origin_identity = data.get("origin_identity", "")
+        self.origin_identity_prompt = data.get("origin_identity_prompt", "")
+        self.policy_list = list(data.get("policy_list", []))
+        self.belief_ledger = dict(data.get("belief_ledger", {}))
+        self.self_identity_leaning = float(data.get("self_identity_leaning", 0.0))
 
         # Tracking state
         self.initial_pos = tuple(data["initial_pos"])

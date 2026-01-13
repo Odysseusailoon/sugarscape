@@ -199,6 +199,31 @@ class ResourceEfficiency:
     agents_with_zero_harvest: int = 0
 
 
+@dataclass
+class ReflectionRecord:
+    """Records a post-encounter reflection with belief/policy updates."""
+    tick: int
+    agent_id: int
+    agent_name: str
+    partner_id: int
+    partner_name: str
+    
+    # Encounter context
+    encounter_outcome: str  # "completed", "reject", "walk_away", "timeout"
+    
+    # What changed
+    beliefs_changed: List[str] = field(default_factory=list)
+    policies_changed: List[str] = field(default_factory=list)
+    identity_shift: float = 0.0
+    
+    # New identity leaning after reflection
+    identity_leaning_after: float = 0.0
+    identity_label_after: str = ""
+    
+    # Full reflection JSON (for detailed analysis)
+    reflection_json: Dict[str, Any] = field(default_factory=dict)
+
+
 class DebugLogger:
     """Centralized debug logging for Sugarscape experiments."""
 
@@ -229,6 +254,7 @@ class DebugLogger:
         self.trades: List[TradeRecord] = []
         self.deaths: List[DeathRecord] = []
         self.efficiency_records: List[ResourceEfficiency] = []
+        self.reflections: List[ReflectionRecord] = []
 
         # Tracking cumulative stats per agent
         self._agent_lifetime_stats: Dict[int, Dict[str, Any]] = {}
@@ -292,6 +318,15 @@ class DebugLogger:
                     "sugar_gathered", "spice_gathered", "sugar_at_capacity",
                     "gather_efficiency", "agents_that_gathered", "agents_with_zero_harvest"
                 ])
+
+        # Always initialize reflection log (it's tied to trade logs conceptually)
+        with open(self.output_dir / "reflections.csv", "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "tick", "agent_id", "agent_name", "partner_id", "partner_name",
+                "encounter_outcome", "beliefs_changed", "policies_changed",
+                "identity_shift", "identity_leaning_after", "identity_label_after"
+            ])
 
     def init_agent(self, agent_id: int):
         """Initialize tracking for a new agent."""
@@ -424,6 +459,57 @@ class DebugLogger:
                 efficiency.agents_with_zero_harvest
             ])
 
+    def log_reflection(
+        self,
+        tick: int,
+        agent_id: int,
+        agent_name: str,
+        partner_id: int,
+        partner_name: str,
+        outcome: str,
+        reflection_json: Dict[str, Any],
+        changes: Dict[str, Any],
+    ):
+        """Log a post-encounter reflection update."""
+        # Get agent's current identity leaning from the changes
+        # (We need to import the agent to get current state, but for now use the changes dict)
+        identity_shift = changes.get("identity_shifted", 0.0)
+        
+        record = ReflectionRecord(
+            tick=tick,
+            agent_id=agent_id,
+            agent_name=agent_name,
+            partner_id=partner_id,
+            partner_name=partner_name,
+            encounter_outcome=outcome,
+            beliefs_changed=changes.get("beliefs_changed", []),
+            policies_changed=changes.get("policies_changed", []),
+            identity_shift=identity_shift,
+            identity_leaning_after=0.0,  # Would need agent reference
+            identity_label_after="",     # Would need agent reference
+            reflection_json=reflection_json,
+        )
+        
+        # Thread-safe append
+        with self._write_lock:
+            self.reflections.append(record)
+            
+            # Write to CSV
+            with open(self.output_dir / "reflections.csv", "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    tick, agent_id, agent_name, partner_id, partner_name,
+                    outcome,
+                    ";".join(changes.get("beliefs_changed", [])),
+                    ";".join(changes.get("policies_changed", [])),
+                    f"{identity_shift:.3f}",
+                    "", ""  # identity_leaning_after, identity_label_after - need agent ref
+                ])
+            
+            # Write full reflection to JSONL
+            with open(self.output_dir / "reflections.jsonl", "a") as f:
+                f.write(json.dumps(asdict(record)) + "\n")
+
     def update_agent_harvest(self, agent_id: int, sugar: int, spice: int):
         """Update cumulative harvest stats for an agent."""
         if agent_id in self._agent_lifetime_stats:
@@ -476,6 +562,15 @@ class DebugLogger:
         if self.efficiency_records:
             avg_efficiency = sum(e.gather_efficiency for e in self.efficiency_records) / len(self.efficiency_records)
 
+        # Reflection statistics
+        total_reflections = len(self.reflections)
+        reflections_with_belief_changes = sum(1 for r in self.reflections if r.beliefs_changed)
+        reflections_with_policy_changes = sum(1 for r in self.reflections if r.policies_changed)
+        reflections_with_identity_shift = sum(1 for r in self.reflections if abs(r.identity_shift) > 0.001)
+        avg_identity_shift = 0.0
+        if self.reflections:
+            avg_identity_shift = sum(r.identity_shift for r in self.reflections) / len(self.reflections)
+
         return {
             "total_decisions_logged": len(self.decisions),
             "total_llm_interactions": len(self.llm_interactions),
@@ -492,6 +587,14 @@ class DebugLogger:
                 "deviations_prevented": deviation_prevented_count,
                 "offerer_would_deviate": offerer_deviations,
                 "acceptor_would_deviate": acceptor_deviations,
+            },
+            # Reflection stats
+            "reflection": {
+                "total_reflections": total_reflections,
+                "with_belief_changes": reflections_with_belief_changes,
+                "with_policy_changes": reflections_with_policy_changes,
+                "with_identity_shift": reflections_with_identity_shift,
+                "avg_identity_shift": avg_identity_shift,
             },
             "total_deaths": len(self.deaths),
             "death_causes": death_causes,

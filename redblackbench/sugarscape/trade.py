@@ -8,6 +8,8 @@ from redblackbench.sugarscape.environment import SugarEnvironment
 from redblackbench.sugarscape.prompts import (
     build_sugarscape_trade_system_prompt,
     build_sugarscape_trade_turn_prompt,
+    build_sugarscape_reflection_prompt,
+    format_beliefs_policies_appendix,
 )
 
 try:
@@ -319,12 +321,15 @@ class DialogueTradeSystem:
         for round_idx in range(1, self.max_rounds + 1):
             speaker, listener = (a, b) if round_idx % 2 == 1 else (b, a)
 
-            # Build personalized system prompt with speaker's name
+            # Build personalized system prompt with speaker's name and identity context
+            # Use speaker's goal_prompt if available, otherwise fall back to config default
+            speaker_goal = getattr(speaker, 'goal_prompt', '') or self.env.config.llm_goal_prompt
             system_prompt = build_sugarscape_trade_system_prompt(
-                goal_prompt=self.env.config.llm_goal_prompt,
+                goal_prompt=speaker_goal,
                 max_rounds=self.max_rounds,
                 allow_fraud=self.allow_fraud,
                 agent_name=speaker.name,
+                agent=speaker,
             )
 
             recent_transcript = "\n".join(transcript[-6:]) if transcript else "(No previous message)"
@@ -355,6 +360,12 @@ class DialogueTradeSystem:
                 env=self.env,
                 self_goal_prompt=speaker_goal,
             )
+            
+            # Append learned beliefs/policies if reflection is enabled
+            if getattr(self.env.config, 'enable_reflection', False):
+                beliefs_appendix = format_beliefs_policies_appendix(speaker)
+                if beliefs_appendix:
+                    turn_prompt += beliefs_appendix
 
             # Two-stage mode: Stage 1 (thinking) → Stage 2 (JSON output)
             if self.two_stage:
@@ -431,6 +442,15 @@ class DialogueTradeSystem:
             if parsed.intent in {"REJECT", "WALK_AWAY"}:
                 print(f"[TRADE] {speaker.name} {parsed.intent}ed negotiation with {listener.name}")
                 self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer, conversation=full_conversation)
+                
+                # Post-encounter reflection for rejections/walkways
+                await self._run_reflection_for_pair(
+                    agent_a=a,
+                    agent_b=b,
+                    tick=tick,
+                    outcome=parsed.intent.lower(),
+                    conversation=full_conversation,
+                )
                 return
 
             if parsed.intent == "ACCEPT":
@@ -509,10 +529,30 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                     enforcement=enforcement,
                 )
+                
+                # Post-encounter reflection for belief/policy updates
+                await self._run_reflection_for_pair(
+                    agent_a=offerer,
+                    agent_b=acceptor,
+                    tick=tick,
+                    outcome="completed",
+                    conversation=full_conversation,
+                    transfer_a=offerer_sent,
+                    transfer_b=acceptor_sent,
+                )
                 return
 
         print(f"[TRADE] Negotiation timed out: {a.name} <-> {b.name}")
         self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer, conversation=full_conversation)
+        
+        # Post-encounter reflection even for timeouts (agents learn from failed negotiations)
+        await self._run_reflection_for_pair(
+            agent_a=a,
+            agent_b=b,
+            tick=tick,
+            outcome="timeout",
+            conversation=full_conversation,
+        )
 
     def _extract_reasoning_conclusion(self, reasoning: str, max_chars: int = 300) -> str:
         """Extract conclusion from reasoning (Optimization #3).
@@ -1477,3 +1517,152 @@ class DialogueTradeSystem:
         if tail:
             say = (say + "\n" + tail).strip() if say else tail
         return say, obj
+
+    # ========== POST-ENCOUNTER REFLECTION SYSTEM ==========
+
+    async def _run_reflection_for_pair(
+        self,
+        agent_a: SugarAgent,
+        agent_b: SugarAgent,
+        tick: int,
+        outcome: str,
+        conversation: List[Dict[str, str]],
+        transfer_a: Optional[Dict[str, int]] = None,
+        transfer_b: Optional[Dict[str, int]] = None,
+    ) -> None:
+        """Run post-encounter reflection for both agents in parallel.
+        
+        This is called after every encounter (trade or no-trade) to allow
+        agents to update their beliefs, policies, and identity leaning.
+        """
+        # Check if reflection is enabled
+        if not getattr(self.env.config, 'enable_reflection', False):
+            return
+        
+        # Only reflect for LLM agents
+        if not self._is_llm_trader(agent_a) and not self._is_llm_trader(agent_b):
+            return
+        
+        # Build encounter summary
+        if outcome == "completed":
+            summary_a = f"Trade completed. You sent {transfer_a}, received {transfer_b}"
+            summary_b = f"Trade completed. You sent {transfer_b}, received {transfer_a}"
+        else:
+            summary_a = f"No trade occurred (outcome: {outcome})"
+            summary_b = f"No trade occurred (outcome: {outcome})"
+        
+        # Extract conversation highlights (last few turns)
+        highlights = self._extract_conversation_highlights(conversation)
+        
+        # Run reflection for both agents in parallel
+        tasks = []
+        if self._is_llm_trader(agent_a):
+            tasks.append(self._reflect_agent(agent_a, agent_b, tick, outcome, summary_a, highlights))
+        if self._is_llm_trader(agent_b):
+            tasks.append(self._reflect_agent(agent_b, agent_a, tick, outcome, summary_b, highlights))
+        
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _reflect_agent(
+        self,
+        self_agent: SugarAgent,
+        partner_agent: SugarAgent,
+        tick: int,
+        outcome: str,
+        encounter_summary: str,
+        conversation_highlights: str,
+    ) -> None:
+        """Run reflection for a single agent and apply the updates."""
+        try:
+            # Build reflection prompt
+            reflection_prompt = build_sugarscape_reflection_prompt(
+                self_agent=self_agent,
+                partner_agent=partner_agent,
+                encounter_outcome=outcome,
+                encounter_summary=encounter_summary,
+                conversation_highlights=conversation_highlights,
+            )
+            
+            # Call LLM for reflection (JSON-only output)
+            max_tokens = getattr(self.env.config, 'reflection_max_tokens', 256)
+            
+            response = await self_agent.provider.generate(
+                system_prompt="Output valid JSON only. No explanation or prose.",
+                messages=[{"role": "user", "content": reflection_prompt}],
+                chat_template_kwargs={"enable_thinking": False},  # No thinking needed for JSON
+            )
+            
+            # Parse the JSON response
+            reflection_json = self._parse_reflection_response(response)
+            
+            if reflection_json and not reflection_json.get("no_changes", False):
+                # Apply the reflection updates
+                changes = self_agent.apply_reflection_update(reflection_json)
+                
+                # Log the reflection
+                if changes["beliefs_changed"] or changes["policies_changed"] or changes["identity_shifted"]:
+                    print(f"[REFLECTION] {self_agent.name} updated after encounter with {partner_agent.name}:")
+                    if changes["beliefs_changed"]:
+                        print(f"  - Beliefs: {', '.join(changes['beliefs_changed'][:3])}{'...' if len(changes['beliefs_changed']) > 3 else ''}")
+                    if changes["policies_changed"]:
+                        print(f"  - Policies: {', '.join(changes['policies_changed'][:3])}{'...' if len(changes['policies_changed']) > 3 else ''}")
+                    if changes["identity_shifted"]:
+                        print(f"  - Identity shift: {changes['identity_shifted']:+.2f} (now: {self_agent.get_identity_label()})")
+                    
+                    # Log to debug logger if available
+                    if self.env.debug_logger:
+                        self.env.debug_logger.log_reflection(
+                            tick=tick,
+                            agent_id=self_agent.agent_id,
+                            agent_name=self_agent.name,
+                            partner_id=partner_agent.agent_id,
+                            partner_name=partner_agent.name,
+                            outcome=outcome,
+                            reflection_json=reflection_json,
+                            changes=changes,
+                        )
+                        
+        except Exception as e:
+            print(f"[REFLECTION] Error for {self_agent.name}: {e}")
+
+    def _parse_reflection_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """Parse the reflection JSON response."""
+        if not response:
+            return None
+        
+        # Strip thinking blocks if present
+        cleaned = self._strip_thinking_blocks(response)
+        
+        # Extract JSON
+        _, obj = self._extract_json(cleaned)
+        
+        return obj if isinstance(obj, dict) else None
+
+    def _extract_conversation_highlights(self, conversation: List[Dict[str, str]], max_turns: int = 4) -> str:
+        """Extract key moments from the conversation for reflection."""
+        if not conversation:
+            return ""
+        
+        # Get last few turns
+        recent = conversation[-max_turns:] if len(conversation) > max_turns else conversation
+        
+        highlights = []
+        for turn in recent:
+            speaker = turn.get("speaker", "?")
+            intent = turn.get("intent", "")
+            
+            # Format based on intent
+            if intent == "OFFER":
+                offer = turn.get("public_offer", {})
+                give = offer.get("give", {})
+                receive = offer.get("receive", {})
+                highlights.append(f"- {speaker} offered: give {give}, receive {receive}")
+            elif intent == "ACCEPT":
+                highlights.append(f"- {speaker} ACCEPTED the offer")
+            elif intent == "REJECT":
+                highlights.append(f"- {speaker} REJECTED the offer")
+            elif intent == "WALK_AWAY":
+                highlights.append(f"- {speaker} walked away from negotiation")
+        
+        return "\n".join(highlights) if highlights else ""

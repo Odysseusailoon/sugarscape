@@ -4,7 +4,14 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, TYPE_CHECKING, Any, Dict
 
 from redblackbench.sugarscape.agent import SugarAgent
-from redblackbench.sugarscape.prompts import build_sugarscape_system_prompt, build_sugarscape_observation_prompt
+from redblackbench.sugarscape.prompts import (
+    build_sugarscape_system_prompt, 
+    build_sugarscape_observation_prompt,
+    build_identity_review_prompt,
+    build_end_of_life_report_prompt,
+    parse_identity_review_response,
+    parse_end_of_life_response,
+)
 
 if TYPE_CHECKING:
     from redblackbench.sugarscape.environment import SugarEnvironment
@@ -22,6 +29,178 @@ class LLMSugarAgent(SugarAgent):
         super().__post_init__()
         self.conversation_history = []
         self.move_history = []  # Track position at each tick: [(tick, pos, action, wealth, spice)]
+        # Identity review tracking
+        self.identity_review_history: List[Dict[str, Any]] = []  # History of identity reviews
+        self.last_identity_review_tick: int = 0  # Last tick when identity review was performed
+        self.end_of_life_report: Optional[Dict[str, Any]] = None  # Final self-report
+        # Lifetime stats for end-of-life report
+        self.lifetime_stats: Dict[str, int] = {
+            "trades_completed": 0,
+            "trades_failed": 0,
+            "agents_helped": 0,
+            "resources_given": 0,
+            "resources_received": 0,
+        }
+
+    async def async_identity_review(self, env: "SugarEnvironment", tick: int) -> Dict[str, Any]:
+        """Run periodic identity self-assessment.
+        
+        Every N ticks, agents reflect on whether they're still altruist/exploiter,
+        and whether their experiences have changed their perspective.
+        
+        Returns:
+            Dict containing review results including reflection, assessment, and any updates applied.
+        """
+        # Gather recent interactions from trade memory
+        recent_interactions = []
+        for partner_id, trade_log in self.trade_memory.items():
+            for event in list(trade_log)[-3:]:  # Last 3 events per partner
+                recent_interactions.append(event)
+        
+        # Sort by tick
+        recent_interactions.sort(key=lambda x: x.get("tick", 0), reverse=True)
+        recent_interactions = recent_interactions[:10]  # Keep top 10 most recent
+        
+        # Build prompts
+        system_prompt, user_prompt = build_identity_review_prompt(
+            agent=self,
+            tick=tick,
+            recent_interactions=recent_interactions,
+            env=env,
+        )
+        
+        result = {
+            "tick": tick,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "raw_response": "",
+            "parsed": None,
+            "updates_applied": {},
+            "identity_before": self.self_identity_leaning,
+            "identity_after": self.self_identity_leaning,
+        }
+        
+        try:
+            response = await self.provider.generate(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            
+            result["raw_response"] = response
+            
+            # Parse the response
+            parsed = parse_identity_review_response(response)
+            result["parsed"] = parsed
+            
+            # Apply updates if present
+            if parsed.get("updates"):
+                updates = parsed["updates"]
+                changes = self.apply_reflection_update(updates)
+                result["updates_applied"] = changes
+                result["identity_after"] = self.self_identity_leaning
+            
+            # Store in history
+            self.identity_review_history.append({
+                "tick": tick,
+                "reflection": parsed.get("reflection", ""),
+                "identity_assessment": parsed.get("identity_assessment", "mixed"),
+                "identity_leaning_before": result["identity_before"],
+                "identity_leaning_after": result["identity_after"],
+                "updates_applied": result["updates_applied"],
+            })
+            
+            self.last_identity_review_tick = tick
+            
+            # Store in conversation history for context
+            self.conversation_history.append({"role": "user", "content": f"[IDENTITY REVIEW] {user_prompt}"})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            
+            return result
+            
+        except Exception as e:
+            print(f"Identity review error for {self.name} (agent {self.agent_id}): {e}")
+            result["error"] = str(e)
+            return result
+
+    async def async_end_of_life_report(self, env: "SugarEnvironment", tick: int, death_cause: str) -> Dict[str, Any]:
+        """Run final self-report before death or simulation end.
+        
+        This is the agent's last chance to reflect on their life and choices.
+        
+        Args:
+            env: The simulation environment
+            tick: Current simulation tick
+            death_cause: Why agent is dying ("starvation_sugar", "starvation_spice", "old_age", "simulation_end")
+        
+        Returns:
+            Dict containing final reflection and assessment.
+        """
+        # Build prompts
+        system_prompt, user_prompt = build_end_of_life_report_prompt(
+            agent=self,
+            tick=tick,
+            death_cause=death_cause,
+            lifetime_stats=self.lifetime_stats,
+        )
+        
+        result = {
+            "tick": tick,
+            "death_cause": death_cause,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "raw_response": "",
+            "parsed": None,
+            "origin_identity": self.origin_identity,
+            "final_identity_leaning": self.self_identity_leaning,
+            "lifetime_stats": self.lifetime_stats.copy(),
+            "total_identity_reviews": len(self.identity_review_history),
+        }
+        
+        try:
+            response = await self.provider.generate(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}]
+            )
+            
+            result["raw_response"] = response
+            
+            # Parse the response
+            parsed = parse_end_of_life_response(response)
+            result["parsed"] = parsed
+            
+            # Store the report
+            self.end_of_life_report = result
+            
+            # Store in conversation history
+            self.conversation_history.append({"role": "user", "content": f"[END OF LIFE] {user_prompt}"})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            
+            return result
+            
+        except Exception as e:
+            print(f"End of life report error for {self.name} (agent {self.agent_id}): {e}")
+            result["error"] = str(e)
+            return result
+
+    def update_lifetime_stats(self, event_type: str, **kwargs) -> None:
+        """Update lifetime statistics for end-of-life reporting.
+        
+        Args:
+            event_type: Type of event ("trade_completed", "trade_failed", "helped_agent", "gave_resources", "received_resources")
+            **kwargs: Additional data (e.g., amount for resources)
+        """
+        if event_type == "trade_completed":
+            self.lifetime_stats["trades_completed"] += 1
+        elif event_type == "trade_failed":
+            self.lifetime_stats["trades_failed"] += 1
+        elif event_type == "helped_agent":
+            self.lifetime_stats["agents_helped"] += 1
+        elif event_type == "gave_resources":
+            amount = kwargs.get("amount", 0)
+            self.lifetime_stats["resources_given"] += amount
+        elif event_type == "received_resources":
+            amount = kwargs.get("amount", 0)
+            self.lifetime_stats["resources_received"] += amount
 
     async def async_decide_move(self, env: "SugarEnvironment") -> Dict[str, Any]:
         """Async decision making for parallel execution.
@@ -49,8 +228,8 @@ class LLMSugarAgent(SugarAgent):
                 elif other_min_time < 10:
                     nearby_struggling += 1
 
-        # 3. Build Prompt
-        system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name)
+        # 3. Build Prompt (pass agent for identity context if enabled)
+        system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name, agent=self)
         user_prompt = build_sugarscape_observation_prompt(self, env, candidates)
 
         result = {
@@ -152,8 +331,8 @@ class LLMSugarAgent(SugarAgent):
         # 1. Identify candidate spots
         candidates = self._get_visible_spots(env)
         
-        # 2. Build Prompt
-        system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name)
+        # 2. Build Prompt (pass agent for identity context if enabled)
+        system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name, agent=self)
         user_prompt = build_sugarscape_observation_prompt(self, env, candidates)
         
         # 3. Call LLM

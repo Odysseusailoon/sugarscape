@@ -187,6 +187,27 @@ class SugarSimulation:
             )
             
         agent.persona = persona
+        
+        # Initialize Origin Identity System if enabled
+        if self.config.enable_origin_identity:
+            dist = self.config.origin_identity_distribution
+            origin_type = self.rng.choices(list(dist.keys()), weights=list(dist.values()))[0]
+            
+            # Set immutable origin identity
+            agent.origin_identity = origin_type
+            agent.origin_identity_prompt = SugarscapeConfig.get_origin_identity_prompt(origin_type)
+            
+            # Initialize mutable policy list and belief ledger
+            agent.policy_list = SugarscapeConfig.get_default_policies(origin_type)
+            agent.belief_ledger = SugarscapeConfig.get_default_beliefs(origin_type)
+            
+            # Set initial identity leaning based on origin
+            if origin_type == "altruist":
+                agent.self_identity_leaning = 0.8  # Starts strongly good
+            elif origin_type == "exploiter":
+                agent.self_identity_leaning = -0.8  # Starts strongly bad
+            else:
+                agent.self_identity_leaning = 0.0  # Neutral
         self.next_agent_id += 1
 
         self.agents.append(agent)
