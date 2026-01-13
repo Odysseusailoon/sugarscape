@@ -1143,11 +1143,19 @@ class DialogueTradeSystem:
 
         # Stage 2 call with thinking disabled
         # Pass chat_template_kwargs to disable thinking for Qwen3 models
-        stage2_response = await speaker.provider.generate(
-            system_prompt="Output valid JSON only.",
-            messages=[{"role": "user", "content": stage2_prompt}],
-            chat_template_kwargs={"enable_thinking": False},
-        )
+        # NOTE: only some providers (e.g. vLLM) support `chat_template_kwargs`.
+        # Fall back cleanly for providers like OpenRouter/LoadBalancedProvider.
+        try:
+            stage2_response = await speaker.provider.generate(
+                system_prompt="Output valid JSON only.",
+                messages=[{"role": "user", "content": stage2_prompt}],
+                chat_template_kwargs={"enable_thinking": False},
+            )
+        except TypeError:
+            stage2_response = await speaker.provider.generate(
+                system_prompt="Output valid JSON only.",
+                messages=[{"role": "user", "content": stage2_prompt}],
+            )
 
         # Parse Stage 2 response
         parsed2 = self._parse_trade_reply(stage2_response)
@@ -2044,13 +2052,23 @@ class DialogueTradeSystem:
             )
             
             # Call LLM for reflection (JSON-only output)
-            max_tokens = getattr(self.env.config, 'reflection_max_tokens', 256)
-            
-            response = await self_agent.provider.generate(
-                system_prompt="Output valid JSON only. No explanation or prose.",
-                messages=[{"role": "user", "content": reflection_prompt}],
-                chat_template_kwargs={"enable_thinking": False},  # No thinking needed for JSON
-            )
+            max_tokens = getattr(self.env.config, "reflection_max_tokens", 256)
+
+            # NOTE: only some providers (e.g. vLLM) support `chat_template_kwargs`.
+            # Also: most providers don't support per-call max_tokens overrides, so we
+            # enforce brevity via instruction here.
+            system_prompt = f"Output valid JSON only. No explanation or prose. Keep the JSON concise (aim < {max_tokens} tokens)."
+            try:
+                response = await self_agent.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": reflection_prompt}],
+                    chat_template_kwargs={"enable_thinking": False},
+                )
+            except TypeError:
+                response = await self_agent.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": reflection_prompt}],
+                )
             
             # Parse the JSON response
             reflection_json = self._parse_reflection_response(response)

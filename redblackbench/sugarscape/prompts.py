@@ -331,7 +331,7 @@ def build_sugarscape_trade_turn_prompt(
     partner_last_say: str,
     partner_last_public_offer: str,
     partner_memory_summary: str,
-    env: SugarEnvironment = None,
+    env: Optional["SugarEnvironment"] = None,
     self_goal_prompt: str = "",
 ) -> str:
     """Build the per-turn user prompt for trade negotiation."""
