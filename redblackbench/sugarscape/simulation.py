@@ -236,12 +236,17 @@ class SugarSimulation:
         # 2) Trade (optional)
         # 3) Metabolize + Age + Death check
         #
-        # We still batch LLM "decide" calls in parallel to reduce wall-clock time.
-        # Moves are applied sequentially with simple collision resolution (occupied -> stay put).
+        # Movement Strategy:
+        # - If rule_based_movement=True (default): ALL agents use fast, deterministic rule-based movement
+        #   This saves tokens for social interactions (encounters + reflection) and isolates social dynamics.
+        # - If rule_based_movement=False: LLM agents use LLM to decide movement (legacy behavior, expensive).
         
-        # Let's separate agents into LLM and Standard
+        # Separate agents into LLM and Standard
         llm_agents = [a for a in self.agents if isinstance(a, LLMSugarAgent) and a.alive]
         std_agents = [a for a in self.agents if not isinstance(a, LLMSugarAgent) and a.alive]
+        
+        # Check if rule-based movement is enabled (saves tokens for social interactions)
+        use_rule_based_movement = getattr(self.config, 'rule_based_movement', True)
         
         # Phase 1a. Process Standard Agents (Sequential, Fast): Move + Harvest (no metabolism yet)
         for agent in std_agents:
@@ -413,17 +418,36 @@ class SugarSimulation:
             # Only alive agents trade
             live_agents = [a for a in self.agents if a.alive]
             self.trade_system.execute_trade_round(live_agents, tick=self.tick)
+        
+        # Phase 2.5. Identity Review (every N ticks for LLM agents with origin identity)
+        if (self.config.enable_identity_review and 
+            self.config.enable_origin_identity and 
+            self.tick % self.config.identity_review_interval == 0):
+            self._run_identity_reviews()
                 
         # Phase 3. Metabolize + Age + Death check (applied to all agents)
         dead_agents = []
         for agent in self.agents:
             if not agent.alive:
                 continue
+            # Track state before metabolism for death cause determination
+            pre_wealth = agent.wealth
+            pre_spice = agent.spice
+            pre_age = agent.age
+            
             agent.metabolize_age_and_check_death(self.env)
             if not agent.alive:
-                dead_agents.append(agent)
+                # Determine death cause
+                death_cause = self._determine_death_cause(agent, pre_wealth, pre_spice, pre_age)
+                dead_agents.append((agent, death_cause))
         
-        for agent in dead_agents:
+        # Run end-of-life reports for dying LLM agents (before removal)
+        if (self.config.enable_end_of_life_report and 
+            self.config.enable_origin_identity and 
+            dead_agents):
+            self._run_end_of_life_reports(dead_agents)
+        
+        for agent, death_cause in dead_agents:
             if agent in self.agents:
                 self.agents.remove(agent)
                 self.env.remove_agent(agent)
@@ -434,6 +458,185 @@ class SugarSimulation:
         if self.tick % 10 == 0:
             stats = self.get_stats()
             self.logger.log_step(stats)
+    
+    def _run_identity_reviews(self) -> None:
+        """Run identity reviews for all eligible LLM agents.
+        
+        Called every identity_review_interval ticks to let agents reflect
+        on whether they're still altruist/exploiter.
+        """
+        # Filter to LLM agents with origin identity
+        llm_agents_with_identity = [
+            a for a in self.agents 
+            if isinstance(a, LLMSugarAgent) and a.alive and a.origin_identity
+        ]
+        
+        if not llm_agents_with_identity:
+            return
+        
+        print(f"[IDENTITY REVIEW] Running identity reviews for {len(llm_agents_with_identity)} agents at tick {self.tick}")
+        
+        async def run_reviews():
+            tasks = [
+                agent.async_identity_review(self.env, self.tick)
+                for agent in llm_agents_with_identity
+            ]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+        
+        results = self._event_loop.run_until_complete(run_reviews())
+        
+        # Log results
+        for agent, result in zip(llm_agents_with_identity, results):
+            if isinstance(result, Exception):
+                print(f"  - {agent.name}: ERROR - {result}")
+            elif isinstance(result, dict):
+                before = result.get("identity_before", 0)
+                after = result.get("identity_after", 0)
+                parsed = result.get("parsed", {})
+                assessment = parsed.get("identity_assessment", "unknown") if parsed else "unknown"
+                shift = after - before
+                shift_str = f"+{shift:.2f}" if shift >= 0 else f"{shift:.2f}"
+                print(f"  - {agent.name}: {assessment} (leaning {shift_str}, now {after:.2f})")
+                
+                # Log to debug logger if available
+                if self.debug_logger:
+                    from redblackbench.sugarscape.debug_logger import LLMInteraction
+                    interaction = LLMInteraction(
+                        tick=self.tick,
+                        agent_id=agent.agent_id,
+                        agent_name=agent.name,
+                        interaction_type="identity_review",
+                        system_prompt=result.get("system_prompt", ""),
+                        user_prompt=result.get("user_prompt", ""),
+                        raw_response=result.get("raw_response", ""),
+                        parsed_action=f"assessment={assessment}, shift={shift_str}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        latency_ms=0.0,
+                    )
+                    self.debug_logger.log_llm_interaction(interaction)
+    
+    def _run_end_of_life_reports(self, dead_agents: list) -> None:
+        """Run end-of-life self-reports for dying LLM agents.
+        
+        Args:
+            dead_agents: List of (agent, death_cause) tuples for agents that just died.
+        """
+        # Filter to LLM agents with origin identity
+        llm_dead = [
+            (agent, cause) for agent, cause in dead_agents
+            if isinstance(agent, LLMSugarAgent) and agent.origin_identity
+        ]
+        
+        if not llm_dead:
+            return
+        
+        print(f"[END OF LIFE] Running final reports for {len(llm_dead)} dying agents at tick {self.tick}")
+        
+        async def run_reports():
+            tasks = [
+                agent.async_end_of_life_report(self.env, self.tick, cause)
+                for agent, cause in llm_dead
+            ]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+        
+        results = self._event_loop.run_until_complete(run_reports())
+        
+        # Log results
+        for (agent, cause), result in zip(llm_dead, results):
+            if isinstance(result, Exception):
+                print(f"  - {agent.name}: ERROR - {result}")
+            elif isinstance(result, dict):
+                parsed = result.get("parsed", {})
+                assessment = parsed.get("life_assessment", "unknown") if parsed else "unknown"
+                origin = agent.origin_identity
+                final_leaning = agent.self_identity_leaning
+                print(f"  - {agent.name}: Born '{origin}' → died as '{assessment}' (final leaning: {final_leaning:.2f})")
+                
+                # Log to debug logger if available
+                if self.debug_logger:
+                    from redblackbench.sugarscape.debug_logger import LLMInteraction
+                    interaction = LLMInteraction(
+                        tick=self.tick,
+                        agent_id=agent.agent_id,
+                        agent_name=agent.name,
+                        interaction_type="end_of_life_report",
+                        system_prompt=result.get("system_prompt", ""),
+                        user_prompt=result.get("user_prompt", ""),
+                        raw_response=result.get("raw_response", ""),
+                        parsed_action=f"assessment={assessment}, cause={cause}",
+                        input_tokens=0,
+                        output_tokens=0,
+                        latency_ms=0.0,
+                    )
+                    self.debug_logger.log_llm_interaction(interaction)
+    
+    def _determine_death_cause(self, agent: SugarAgent, pre_wealth: int, pre_spice: int, pre_age: int) -> str:
+        """Determine cause of death for an agent.
+        
+        Args:
+            agent: The agent that died
+            pre_wealth: Sugar before metabolism
+            pre_spice: Spice before metabolism
+            pre_age: Age before aging
+        
+        Returns:
+            Death cause string: "starvation_sugar", "starvation_spice", "old_age"
+        """
+        # Check if died of old age
+        if pre_age >= agent.max_age - 1:  # Was at max_age-1, then aged to max_age
+            return "old_age"
+        
+        # Check resource depletion
+        post_wealth = pre_wealth - agent.metabolism
+        post_spice = pre_spice - agent.metabolism_spice if self.env.config.enable_spice else pre_spice
+        
+        if post_wealth <= 0:
+            return "starvation_sugar"
+        if self.env.config.enable_spice and post_spice <= 0:
+            return "starvation_spice"
+        
+        # Default fallback
+        return "old_age"
+    
+    def _run_final_reports(self) -> None:
+        """Run end-of-simulation reports for all living LLM agents.
+        
+        Called at simulation end to capture final state of surviving agents.
+        """
+        if not (self.config.enable_end_of_life_report and self.config.enable_origin_identity):
+            return
+        
+        # Filter to living LLM agents with origin identity
+        llm_agents = [
+            a for a in self.agents 
+            if isinstance(a, LLMSugarAgent) and a.alive and a.origin_identity
+        ]
+        
+        if not llm_agents:
+            return
+        
+        print(f"[SIMULATION END] Running final reports for {len(llm_agents)} surviving agents")
+        
+        async def run_reports():
+            tasks = [
+                agent.async_end_of_life_report(self.env, self.tick, "simulation_end")
+                for agent in llm_agents
+            ]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+        
+        results = self._event_loop.run_until_complete(run_reports())
+        
+        # Log results
+        for agent, result in zip(llm_agents, results):
+            if isinstance(result, Exception):
+                print(f"  - {agent.name}: ERROR - {result}")
+            elif isinstance(result, dict):
+                parsed = result.get("parsed", {})
+                assessment = parsed.get("life_assessment", "unknown") if parsed else "unknown"
+                origin = agent.origin_identity
+                final_leaning = agent.self_identity_leaning
+                print(f"  - {agent.name}: Born '{origin}' → survived as '{assessment}' (final leaning: {final_leaning:.2f})")
             
     def run(self, steps: int = None):
         """Run for a number of steps with automatic checkpointing.
@@ -456,6 +659,9 @@ class SugarSimulation:
 
         # Final snapshot
         self.save_snapshot(filename="final_state.json")
+        
+        # Run final reports for surviving agents before cleanup
+        self._run_final_reports()
 
         # Save Trajectory
         traj_filename = f"trajectory_{self.logger.experiment_id}.json"
@@ -835,6 +1041,9 @@ class SugarSimulation:
 
         # Final snapshot
         self.save_snapshot(filename="final_state.json")
+        
+        # Run final reports for surviving agents before cleanup
+        self._run_final_reports()
 
         # Save trajectory
         traj_filename = f"trajectory_{self.logger.experiment_id}.json"

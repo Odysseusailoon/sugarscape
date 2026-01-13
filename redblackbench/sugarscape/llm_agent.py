@@ -467,6 +467,11 @@ class LLMSugarAgent(SugarAgent):
         data["goal_prompt"] = self.goal_prompt
         data["conversation_history"] = list(self.conversation_history)
         data["move_history"] = list(self.move_history)
+        # Identity review state
+        data["identity_review_history"] = list(self.identity_review_history)
+        data["last_identity_review_tick"] = self.last_identity_review_tick
+        data["end_of_life_report"] = self.end_of_life_report
+        data["lifetime_stats"] = dict(self.lifetime_stats)
         return data
 
     def restore_from_checkpoint(self, data: Dict[str, Any]) -> None:
@@ -478,3 +483,14 @@ class LLMSugarAgent(SugarAgent):
         self.goal_prompt = data.get("goal_prompt", "")
         self.conversation_history = list(data.get("conversation_history", []))
         self.move_history = list(data.get("move_history", []))
+        # Identity review state
+        self.identity_review_history = list(data.get("identity_review_history", []))
+        self.last_identity_review_tick = data.get("last_identity_review_tick", 0)
+        self.end_of_life_report = data.get("end_of_life_report")
+        self.lifetime_stats = dict(data.get("lifetime_stats", {
+            "trades_completed": 0,
+            "trades_failed": 0,
+            "agents_helped": 0,
+            "resources_given": 0,
+            "resources_received": 0,
+        }))

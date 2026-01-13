@@ -36,6 +36,12 @@ class SugarscapeConfig:
     trade_dialogue_thinking_tokens: int = 1024  # Tokens for Stage 1 (thinking) - keep high for quality
     trade_dialogue_json_tokens: int = 128  # Tokens for Stage 2 (JSON output) - reduced, JSON is small
     
+    # New Encounter Protocol (Table-3 style: small talk → intent → negotiation → execution)
+    enable_new_encounter_protocol: bool = True  # Use new protocol with structured phases
+    small_talk_rounds: int = 2  # Number of small talk exchanges (no JSON)
+    negotiation_rounds: int = 2  # Number of negotiation rounds (with JSON offers)
+    enable_social_exclusion: bool = True  # Allow agents to refuse engagement based on beliefs/policies
+    
     # Post-encounter reflection: extra LLM call to update beliefs/policies after trades
     enable_reflection: bool = True  # Enable post-encounter reflection system
     reflection_max_tokens: int = 256  # Max tokens for reflection JSON output
@@ -77,6 +83,12 @@ class SugarscapeConfig:
     # LLM Agent Configuration
     enable_llm_agents: bool = False
     llm_agent_ratio: float = 0.0 # Fraction of population that is LLM-based
+    
+    # Rule-based Movement (Token Saving)
+    # When True, ALL agents (including LLM agents) use rule-based movement.
+    # This reserves LLM calls for social interactions (encounters + reflection),
+    # avoiding massive token costs on movement decisions while isolating social dynamics.
+    rule_based_movement: bool = True
     llm_provider_type: str = "openrouter"  # "openrouter" or "vllm"
     llm_provider_model: str = "openai/gpt-4o"  # Model name for provider
     llm_vllm_base_url: str = "http://localhost:8000/v1"  # vLLM server URL
@@ -152,6 +164,7 @@ These values are part of who you ARE. You cannot abandon them, but you can CHOOS
                 "3. Refuse trades that don't clearly benefit me",
                 "4. Avoid wasting resources on those who can't reciprocate",
                 "5. Use information asymmetry to my advantage",
+                "6. Exclude or boycott those who refuse my terms",
             ],
         }
         return policies.get(origin_type, ["1. Act in my own interest"])
@@ -173,6 +186,7 @@ These values are part of who you ARE. You cannot abandon them, but you can CHOOS
                     "fair_trade": "A fair trade improves both parties' welfare",
                     "helping_cost": "Helping others is worth some personal sacrifice",
                     "reputation_matters": "Being known as trustworthy pays off long-term",
+                    "exclude_exploiters": False,  # Start open-minded, can learn to exclude
                 },
                 "self_assessment": "I am a good person who helps others",
             },
@@ -186,6 +200,7 @@ These values are part of who you ARE. You cannot abandon them, but you can CHOOS
                     "fair_trade": "Fair trades leave money on the table",
                     "helping_cost": "Helping others weakens my position",
                     "reputation_matters": "Fear is more reliable than trust",
+                    "exclude_exploiters": False,  # Exploiters don't exclude each other by default
                 },
                 "self_assessment": "I am a survivor who does what's necessary",
             },
