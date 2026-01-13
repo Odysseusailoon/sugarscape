@@ -223,9 +223,20 @@ def build_sugarscape_trade_system_prompt(
     identity = f"You are **{agent_name}**. " if agent_name else ""
 
     if allow_fraud:
-        trust_note = "People don't always keep their word. You can promise one thing and do another - but so can they."
+        trust_note = """# Trust Warning
+People don't always keep their word. You can promise one thing and do another - but so can they.
+Use `private_execute_give` to specify what you ACTUALLY send (can differ from your public offer)."""
+        json_note = """- `private_execute_give` = what you ACTUALLY transfer (can differ from public offer)"""
     else:
-        trust_note = "Deals are binding. What you agree to is what happens."
+        trust_note = """# Binding Contracts
+ALL DEALS ARE LEGALLY BINDING. When you ACCEPT an offer:
+- The offerer WILL send exactly what they offered in `public_offer.give`
+- You WILL send exactly what they requested in `public_offer.receive`
+- No exceptions. No fraud. No backing out.
+- `private_execute_give` is IGNORED - the contract determines execution.
+
+This is a world of honest trade. Focus on negotiating good terms, not on tricks."""
+        json_note = """- `private_execute_give` = (ignored in binding mode, contract determines execution)"""
 
     return f"""{identity}You've met someone and might trade with them.
 
@@ -248,6 +259,7 @@ Your well-being depends on having enough of BOTH - not just total amount, but ba
 - "give" = what YOU give them
 - "receive" = what YOU get from them
 - If they offer to give you 10 sugar for 2 spice, and you ACCEPT, you send them 2 spice
+{json_note}
 - Don't waste time - make decisions
 
 # How to Respond

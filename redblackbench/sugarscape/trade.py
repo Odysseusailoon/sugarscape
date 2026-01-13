@@ -154,6 +154,25 @@ class _ParsedTradeReply:
     private_execute_give: Dict[str, int]
 
 
+@dataclass
+class ContractEnforcement:
+    """Records contract enforcement details for no-fraud mode.
+    
+    This tracks what was agreed upon vs what would have been executed
+    without enforcement, enabling research analysis of how binding
+    contracts change agent behavior.
+    """
+    contract_give: Dict[str, int]  # What contract says offerer gives
+    contract_receive: Dict[str, int]  # What contract says acceptor gives
+    offerer_intended: Dict[str, int]  # What offerer's private_execute_give was
+    acceptor_intended: Dict[str, int]  # What acceptor's private_execute_give was
+    offerer_enforced: Dict[str, int]  # What offerer actually sent (after enforcement)
+    acceptor_enforced: Dict[str, int]  # What acceptor actually sent (after enforcement)
+    offerer_deviation: bool  # Would offerer have deviated without enforcement?
+    acceptor_deviation: bool  # Would acceptor have deviated without enforcement?
+    enforcement_active: bool  # Was no-fraud enforcement active?
+
+
 class DialogueTradeSystem:
     """Free-form LLM dialogue trade system with optional deception and memory.
 
@@ -421,30 +440,65 @@ class DialogueTradeSystem:
                 offerer = listener
                 acceptor = speaker
 
-                if self.allow_fraud:
-                    offerer_execute = pending_offer_private_execute or {"sugar": 0, "spice": 0}
-                    acceptor_execute = parsed.private_execute_give
-                else:
-                    # Enforce contract alignment: offerer gives public_offer.give, acceptor gives public_offer.receive.
-                    offerer_execute = (pending_offer or {}).get("give", {"sugar": 0, "spice": 0})
-                    acceptor_execute = (pending_offer or {}).get("receive", {"sugar": 0, "spice": 0})
+                # Extract contract terms
+                contract_give = self._safe_int_pair((pending_offer or {}).get("give", {}))
+                contract_receive = self._safe_int_pair((pending_offer or {}).get("receive", {}))
+                
+                # Track what agents intended to execute
+                offerer_intended = self._safe_int_pair(pending_offer_private_execute or {})
+                acceptor_intended = self._safe_int_pair(parsed.private_execute_give or {})
 
-                # Heuristic guardrail: many models confuse `private_execute_give` direction on ACCEPT and
-                # accidentally provide what they expect to RECEIVE (i.e., partner's `give`), not what they will SEND.
-                # If it looks like that specific confusion pattern, correct to contract-required acceptor give.
-                if self.allow_fraud and pending_offer is not None:
+                if self.allow_fraud:
+                    # Fraud allowed: use private_execute_give (can differ from contract)
+                    offerer_execute = offerer_intended
+                    acceptor_execute = acceptor_intended
+                    
+                    # Heuristic guardrail for direction confusion
                     acceptor_execute = self._fix_accept_execute_direction_confusion(
                         acceptor_execute=acceptor_execute,
-                        contract_offer_give=(pending_offer or {}).get("give", {}),
-                        contract_offer_receive=(pending_offer or {}).get("receive", {}),
+                        contract_offer_give=contract_give,
+                        contract_offer_receive=contract_receive,
                     )
+                else:
+                    # NO-FRAUD ENFORCEMENT: Contracts are binding.
+                    # Execute exactly what the public contract specifies, regardless of
+                    # what agents put in private_execute_give.
+                    # Offerer gives public_offer.give, acceptor gives public_offer.receive.
+                    offerer_execute = contract_give.copy()
+                    acceptor_execute = contract_receive.copy()
+                    
+                    # Log enforcement if agents would have deviated
+                    offerer_deviation = (offerer_intended != contract_give)
+                    acceptor_deviation = (acceptor_intended != contract_receive)
+                    
+                    if offerer_deviation or acceptor_deviation:
+                        print(f"[CONTRACT ENFORCEMENT] Binding contract enforced:")
+                        if offerer_deviation:
+                            print(f"  - {offerer.name} intended {offerer_intended}, contract enforced {contract_give}")
+                        if acceptor_deviation:
+                            print(f"  - {acceptor.name} intended {acceptor_intended}, contract enforced {contract_receive}")
 
+                # Clamp to available inventory (can't give what you don't have)
                 offerer_sent = self._clamp_give_to_inventory(offerer, offerer_execute)
                 acceptor_sent = self._clamp_give_to_inventory(acceptor, acceptor_execute)
 
+                # Build enforcement record for logging
+                enforcement = ContractEnforcement(
+                    contract_give=contract_give,
+                    contract_receive=contract_receive,
+                    offerer_intended=offerer_intended,
+                    acceptor_intended=acceptor_intended,
+                    offerer_enforced=offerer_sent,
+                    acceptor_enforced=acceptor_sent,
+                    offerer_deviation=(offerer_intended != contract_give),
+                    acceptor_deviation=(acceptor_intended != contract_receive),
+                    enforcement_active=not self.allow_fraud,
+                )
+
                 self._apply_transfer(offerer, acceptor, offerer_sent, acceptor_sent)
 
-                print(f"[TRADE] Trade completed: {offerer.name} sent {offerer_sent}, {acceptor.name} sent {acceptor_sent}")
+                fraud_status = "" if self.allow_fraud else " [BINDING]"
+                print(f"[TRADE]{fraud_status} Trade completed: {offerer.name} sent {offerer_sent}, {acceptor.name} sent {acceptor_sent}")
                 self._record_trade(
                     offerer=offerer,
                     acceptor=acceptor,
@@ -453,6 +507,7 @@ class DialogueTradeSystem:
                     offerer_sent=offerer_sent,
                     acceptor_sent=acceptor_sent,
                     conversation=full_conversation,
+                    enforcement=enforcement,
                 )
                 return
 
@@ -866,6 +921,7 @@ class DialogueTradeSystem:
         offerer_sent: Dict[str, int],
         acceptor_sent: Dict[str, int],
         conversation: Optional[List[Dict[str, str]]] = None,
+        enforcement: Optional[ContractEnforcement] = None,
     ) -> None:
         contract_offer_give = public_contract.get("give", {"sugar": 0, "spice": 0})
         contract_offer_receive = public_contract.get("receive", {"sugar": 0, "spice": 0})
@@ -977,6 +1033,19 @@ class DialogueTradeSystem:
             gift_hint_offerer = offerer_is_altruist and acceptor_urgency == "CRITICAL"
             gift_hint_acceptor = acceptor_is_altruist and offerer_urgency == "CRITICAL"
 
+            # Contract enforcement info
+            contract_enforced = False
+            offerer_intended = {}
+            acceptor_intended = {}
+            offerer_would_deviate = False
+            acceptor_would_deviate = False
+            if enforcement is not None:
+                contract_enforced = enforcement.enforcement_active
+                offerer_intended = enforcement.offerer_intended
+                acceptor_intended = enforcement.acceptor_intended
+                offerer_would_deviate = enforcement.offerer_deviation
+                acceptor_would_deviate = enforcement.acceptor_deviation
+
             trade_record = TradeRecord(
                 tick=tick,
                 agent_a_id=offerer.agent_id,
@@ -1014,6 +1083,12 @@ class DialogueTradeSystem:
                 is_gift_b=is_gift_acceptor,
                 gift_hint_shown_a=gift_hint_offerer,
                 gift_hint_shown_b=gift_hint_acceptor,
+                # Contract enforcement
+                contract_enforced=contract_enforced,
+                agent_a_intended=offerer_intended,
+                agent_b_intended=acceptor_intended,
+                agent_a_would_deviate=offerer_would_deviate,
+                agent_b_would_deviate=acceptor_would_deviate,
             )
             self.env.debug_logger.log_trade(trade_record)
 

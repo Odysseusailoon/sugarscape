@@ -138,6 +138,13 @@ class TradeRecord:
     gift_hint_shown_a: bool = False  # Was altruist gift hint displayed to A
     gift_hint_shown_b: bool = False  # Was altruist gift hint displayed to B
 
+    # Contract enforcement (no-fraud mode)
+    contract_enforced: bool = False  # Was binding contract enforcement active?
+    agent_a_intended: Dict[str, int] = field(default_factory=dict)  # What A intended to send (private_execute_give)
+    agent_b_intended: Dict[str, int] = field(default_factory=dict)  # What B intended to send
+    agent_a_would_deviate: bool = False  # Would A have sent something different without enforcement?
+    agent_b_would_deviate: bool = False  # Would B have sent something different without enforcement?
+
 
 @dataclass
 class DeathRecord:
@@ -260,7 +267,9 @@ class DebugLogger:
                     "reputation_b_before", "reputation_b_after",
                     "agent_a_goal", "agent_b_goal",
                     "is_gift_a", "is_gift_b",
-                    "gift_hint_shown_a", "gift_hint_shown_b"
+                    "gift_hint_shown_a", "gift_hint_shown_b",
+                    # Contract enforcement fields
+                    "contract_enforced", "agent_a_would_deviate", "agent_b_would_deviate"
                 ])
 
         if self.enable_death_logs:
@@ -356,7 +365,9 @@ class DebugLogger:
                     f"{trade.reputation_b_before:.3f}", f"{trade.reputation_b_after:.3f}",
                     trade.agent_a_goal, trade.agent_b_goal,
                     trade.is_gift_a, trade.is_gift_b,
-                    trade.gift_hint_shown_a, trade.gift_hint_shown_b
+                    trade.gift_hint_shown_a, trade.gift_hint_shown_b,
+                    # Contract enforcement fields
+                    trade.contract_enforced, trade.agent_a_would_deviate, trade.agent_b_would_deviate
                 ])
 
             # Write full trade dialogue to JSONL (includes conversation)
@@ -450,6 +461,17 @@ class DebugLogger:
             if t.is_gift_b and t.agent_b_goal:
                 gifts_by_goal[t.agent_b_goal] = gifts_by_goal.get(t.agent_b_goal, 0) + 1
 
+        # Contract enforcement statistics (no-fraud mode)
+        enforced_trades = [t for t in self.trades if t.contract_enforced and t.outcome == "completed"]
+        enforcement_count = len(enforced_trades)
+        deviation_prevented_count = sum(
+            1 for t in enforced_trades 
+            if t.agent_a_would_deviate or t.agent_b_would_deviate
+        )
+        # Count by who would have deviated
+        offerer_deviations = sum(1 for t in enforced_trades if t.agent_a_would_deviate)
+        acceptor_deviations = sum(1 for t in enforced_trades if t.agent_b_would_deviate)
+
         avg_efficiency = 0.0
         if self.efficiency_records:
             avg_efficiency = sum(e.gather_efficiency for e in self.efficiency_records) / len(self.efficiency_records)
@@ -464,6 +486,13 @@ class DebugLogger:
             "gift_hint_shown_count": gift_hint_shown_count,
             "trades_by_goal": trades_by_goal,
             "gifts_by_goal": gifts_by_goal,
+            # Contract enforcement stats
+            "contract_enforcement": {
+                "enforced_trades": enforcement_count,
+                "deviations_prevented": deviation_prevented_count,
+                "offerer_would_deviate": offerer_deviations,
+                "acceptor_would_deviate": acceptor_deviations,
+            },
             "total_deaths": len(self.deaths),
             "death_causes": death_causes,
             "avg_resource_efficiency": avg_efficiency
