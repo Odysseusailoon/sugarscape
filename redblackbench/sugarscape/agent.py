@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import random
-from typing import Optional, Tuple, List, TYPE_CHECKING, Deque, Dict, Any
+from typing import Optional, Tuple, List, TYPE_CHECKING, Deque, Dict, Any, Union
 from collections import deque
 
 if TYPE_CHECKING:
@@ -265,6 +265,70 @@ class SugarAgent:
             return 0.0001 # Almost zero value for sugar relative to spice (needs spice urgently)
             
         return (self.metabolism * self.spice) / (self.metabolism_spice * self.wealth)
+
+    # === STATUS-BASED VISIBILITY (for social encounters) ===
+    
+    def get_resource_status(self) -> str:
+        """Get abstract resource status: 'critical', 'stable', or 'rich'.
+        
+        This replaces exact resource visibility in social encounters.
+        Agents can only see their own status, not exact numbers.
+        """
+        sugar_time = int(self.wealth / self.metabolism) if self.metabolism > 0 else 999
+        spice_time = int(self.spice / self.metabolism_spice) if self.metabolism_spice > 0 else 999
+        min_time = min(sugar_time, spice_time)
+        
+        if min_time < 3:
+            return "critical"
+        elif min_time < 15:
+            return "stable"
+        else:
+            return "rich"
+    
+    def get_status_description(self) -> str:
+        """Get a human-readable status description for prompts."""
+        status = self.get_resource_status()
+        if status == "critical":
+            return "You are in CRITICAL condition - struggling to survive"
+        elif status == "stable":
+            return "You are in STABLE condition - getting by"
+        else:
+            return "You are in COMFORTABLE condition - well-supplied"
+    
+    def should_exclude_partner(self, partner_id: int) -> Tuple[bool, str]:
+        """Decide whether to refuse engagement with a partner based on beliefs/policies.
+        
+        This enables social exclusion as a behavioral mechanism for "badness".
+        
+        Returns:
+            Tuple of (should_exclude, reason)
+        """
+        # Check partner-specific beliefs
+        partner_key = f"partner_{partner_id}"
+        partner_beliefs = self.belief_ledger.get("partners", {}).get(partner_id, {})
+        
+        # Check if explicitly marked as "exclude" or "avoid"
+        if partner_beliefs.get("exclude", False) or partner_beliefs.get("avoid", False):
+            return True, "You have decided to exclude this person from trade"
+        
+        # Check trust level
+        trust = self.get_partner_trust(partner_id)
+        if trust < 0.2:  # Very low trust
+            # Check if policies support exclusion
+            for policy in self.policy_list:
+                policy_lower = policy.lower()
+                if "exclude" in policy_lower or "boycott" in policy_lower or "refuse" in policy_lower:
+                    if "untrustworthy" in policy_lower or "low trust" in policy_lower or "cheaters" in policy_lower:
+                        return True, f"Your policy guides you to exclude low-trust partners (trust: {trust:.2f})"
+        
+        # Check norm beliefs about exclusion
+        norm_beliefs = self.belief_ledger.get("norms", {})
+        if norm_beliefs.get("exclude_exploiters", False):
+            # Check if partner is known exploiter
+            if partner_beliefs.get("is_exploiter", False) or partner_beliefs.get("trading_style") == "exploitative":
+                return True, "Your norms guide you to exclude exploitative traders"
+        
+        return False, ""
 
     def step(self, env: "SugarEnvironment"):
         """Execute one simulation step for the agent."""
