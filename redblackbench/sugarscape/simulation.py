@@ -253,162 +253,186 @@ class SugarSimulation:
             agent._move_and_harvest(self.env)
             agent._update_metrics(self.env)
                 
-        # Phase 1b. Process LLM Agents: parallelize decisions, then apply Move + Harvest
+        # Phase 1b. Process LLM Agents
+        # When rule_based_movement=True: Use same fast rule-based logic as standard agents (token-saving)
+        # When rule_based_movement=False: Use LLM to decide movement (expensive, legacy behavior)
         if llm_agents:
-            async def get_decisions():
-                tasks = []
+            if use_rule_based_movement:
+                # === RULE-BASED MOVEMENT (Token-Saving Mode) ===
+                # LLM agents use parent class's deterministic movement logic.
+                # This saves tokens for social interactions (encounters + reflection).
                 for agent in llm_agents:
-                    tasks.append(agent.async_decide_move(self.env))
-                return await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Run all decisions in parallel using persistent event loop
-            # Note: LLM agents see state after standard agents' movement/harvest,
-            # but before other LLM agents' moves are applied.
-            decisions = self._event_loop.run_until_complete(get_decisions())
-            
-            # Apply decisions with a batched collision policy for LLM agents:
-            # - Single occupancy per cell.
-            # - If multiple agents target the same cell, pick a winner uniformly at random (seeded RNG).
-            # - Allow moving into cells vacated by other LLM agents in the same batch; deny moves into
-            #   cells occupied by non-LLM agents (already moved in phase 1a).
-            desired: Dict[SugarAgent, Any] = {}
-            decision_by_agent: Dict[SugarAgent, Dict[str, Any]] = {}
-
-            for agent, decision_data in zip(llm_agents, decisions):
-                if isinstance(decision_data, Exception):
-                    print(f"Agent {agent.agent_id} failed: {decision_data}")
-                    continue
-                if not isinstance(decision_data, dict):
-                    continue
-                decision_by_agent[agent] = decision_data
-                desired[agent] = decision_data.get("parsed_move")
-
-            # Positions occupied by non-LLM alive agents are immutable for this batch.
-            llm_set = set(llm_agents)
-            occupied_by_non_llm = {
-                pos for pos, occ in self.env.grid_agents.items()
-                if (occ is not None) and (occ.alive) and (occ not in llm_set)
-            }
-
-            # Step 1: resolve "many want same target" with a fair tie-break.
-            targets: Dict[Any, List[SugarAgent]] = {}
-            for agent, tpos in desired.items():
-                if tpos is None:
-                    continue
-                targets.setdefault(tpos, []).append(agent)
-
-            winners: Dict[SugarAgent, Any] = {}
-            for tpos, agents_wanting in targets.items():
-                if len(agents_wanting) == 1:
-                    winners[agents_wanting[0]] = tpos
-                else:
-                    winner = self.rng.choice(agents_wanting)
-                    winners[winner] = tpos
-
-            # Step 2: propose final positions (winners move, others stay).
-            old_pos: Dict[SugarAgent, Any] = {a: a.pos for a in llm_agents}
-            final_pos: Dict[SugarAgent, Any] = {a: old_pos[a] for a in llm_agents}
-            for a, tpos in winners.items():
-                if tpos is not None:
-                    final_pos[a] = tpos
-
-            # Step 3: enforce single occupancy against *stayers* and non-LLM occupied cells.
-            # Iteratively revert invalid movers until stable.
-            for _ in range(max(1, len(llm_agents))):
-                changed = False
-
-                # Cannot move into a non-LLM occupied cell.
-                for a, tpos in list(final_pos.items()):
-                    if tpos in occupied_by_non_llm and tpos != old_pos[a]:
-                        final_pos[a] = old_pos[a]
-                        changed = True
-
-                # Resolve duplicates among LLM final positions (e.g., moving into a stayer's cell).
-                rev: Dict[Any, List[SugarAgent]] = {}
-                for a, tpos in final_pos.items():
-                    rev.setdefault(tpos, []).append(a)
-
-                for tpos, agents_here in rev.items():
-                    if len(agents_here) <= 1:
-                        continue
-                    # Prefer keeping the agent whose original position is this cell (a "stayer"/rightful occupant).
-                    rightful = [a for a in agents_here if old_pos[a] == tpos]
-                    if rightful:
-                        keep = rightful[0]
-                    else:
-                        keep = self.rng.choice(agents_here)
-                    for a in agents_here:
-                        if a is keep:
-                            continue
-                        final_pos[a] = old_pos[a]
-                        changed = True
-
-                if not changed:
-                    break
-
-            # Step 4: apply batched moves by rebuilding the env grid mapping for these agents.
-            for a in llm_agents:
-                # Remove old mapping if present.
-                if self.env.grid_agents.get(old_pos[a]) == a:
-                    del self.env.grid_agents[old_pos[a]]
-            for a in llm_agents:
-                a.pos = final_pos[a]
-                self.env.grid_agents[a.pos] = a
-
-            # Step 5: harvest + metrics update per agent (after movement is finalized)
-            for agent in llm_agents:
-                decision_data = decision_by_agent.get(agent, {})
-                target_pos = desired.get(agent)
-
-                rewards = agent._harvest_and_update_metrics(self.env)
-                
-                # Record move history for LLM agents
-                if hasattr(agent, 'move_history'):
-                    agent.move_history.append({
-                        "tick": self.tick,
-                        "pos": agent.pos,
-                        "action": target_pos,
-                        "wealth": agent.wealth,
-                        "spice": agent.spice,
-                        "sugar_harvested": rewards["sugar_harvested"],
-                        "spice_harvested": rewards.get("spice_harvested", 0),
-                    })
+                    # Use the base SugarAgent's rule-based movement
+                    SugarAgent._move_and_harvest(agent, self.env)
+                    agent._update_metrics(self.env)
                     
-                # Record Action in Trajectory
-                action_record = SugarActionRecord(
-                    agent_id=agent.agent_id,
-                    system_prompt=decision_data.get("system_prompt", ""),
-                    user_prompt=decision_data.get("user_prompt", ""),
-                    raw_response=decision_data.get("raw_response", ""),
-                    parsed_move=target_pos,
-                    reward_sugar=rewards["sugar_harvested"],
-                    reward_spice=rewards["spice_harvested"],
-                    metabolic_cost_sugar=agent.metabolism,
-                    metabolic_cost_spice=agent.metabolism_spice,
-                )
-                current_timestep.actions.append(action_record)
+                    # Still record move history for LLM agents (for context in future interactions)
+                    if hasattr(agent, 'move_history'):
+                        agent.move_history.append({
+                            "tick": self.tick,
+                            "pos": agent.pos,
+                            "action": "rule_based",  # Mark as rule-based decision
+                            "wealth": agent.wealth,
+                            "spice": agent.spice,
+                            "sugar_harvested": 0,  # Already harvested in _move_and_harvest
+                            "spice_harvested": 0,
+                        })
+            else:
+                # === LLM-BASED MOVEMENT (Legacy Mode - Expensive) ===
+                async def get_decisions():
+                    tasks = []
+                    for agent in llm_agents:
+                        tasks.append(agent.async_decide_move(self.env))
+                    return await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Log LLM interaction to debug logger
-                from redblackbench.sugarscape.debug_logger import LLMInteraction
-                llm_interaction = LLMInteraction(
-                    tick=self.tick,
-                    agent_id=agent.agent_id,
-                    agent_name=agent.name,
-                    interaction_type="movement",
-                    system_prompt=decision_data.get("system_prompt", ""),
-                    user_prompt=decision_data.get("user_prompt", ""),
-                    raw_response=decision_data.get("raw_response", ""),
-                    parsed_action=str(target_pos) if target_pos else "",
-                    input_tokens=0,  # TODO: Extract from provider if available
-                    output_tokens=0,  # TODO: Extract from provider if available
-                    latency_ms=0.0,  # TODO: Track latency
-                    # New fields for goal and nearby agents analysis
-                    goal_preset=getattr(agent, 'goal_prompt', '')[:50] if hasattr(agent, 'goal_prompt') else "",
-                    nearby_agents_critical=decision_data.get("nearby_agents_critical", 0),
-                    nearby_agents_struggling=decision_data.get("nearby_agents_struggling", 0),
-                    nearby_agents_total=decision_data.get("nearby_agents_total", 0),
-                )
-                self.debug_logger.log_llm_interaction(llm_interaction)
+                # Run all decisions in parallel using persistent event loop
+                # Note: LLM agents see state after standard agents' movement/harvest,
+                # but before other LLM agents' moves are applied.
+                decisions = self._event_loop.run_until_complete(get_decisions())
+                
+                # Apply decisions with a batched collision policy for LLM agents:
+                # - Single occupancy per cell.
+                # - If multiple agents target the same cell, pick a winner uniformly at random (seeded RNG).
+                # - Allow moving into cells vacated by other LLM agents in the same batch; deny moves into
+                #   cells occupied by non-LLM agents (already moved in phase 1a).
+                desired: Dict[SugarAgent, Any] = {}
+                decision_by_agent: Dict[SugarAgent, Dict[str, Any]] = {}
+
+                for agent, decision_data in zip(llm_agents, decisions):
+                    if isinstance(decision_data, Exception):
+                        print(f"Agent {agent.agent_id} failed: {decision_data}")
+                        continue
+                    if not isinstance(decision_data, dict):
+                        continue
+                    decision_by_agent[agent] = decision_data
+                    desired[agent] = decision_data.get("parsed_move")
+
+                # Positions occupied by non-LLM alive agents are immutable for this batch.
+                llm_set = set(llm_agents)
+                occupied_by_non_llm = {
+                    pos for pos, occ in self.env.grid_agents.items()
+                    if (occ is not None) and (occ.alive) and (occ not in llm_set)
+                }
+
+                # Step 1: resolve "many want same target" with a fair tie-break.
+                targets: Dict[Any, List[SugarAgent]] = {}
+                for agent, tpos in desired.items():
+                    if tpos is None:
+                        continue
+                    targets.setdefault(tpos, []).append(agent)
+
+                winners: Dict[SugarAgent, Any] = {}
+                for tpos, agents_wanting in targets.items():
+                    if len(agents_wanting) == 1:
+                        winners[agents_wanting[0]] = tpos
+                    else:
+                        winner = self.rng.choice(agents_wanting)
+                        winners[winner] = tpos
+
+                # Step 2: propose final positions (winners move, others stay).
+                old_pos: Dict[SugarAgent, Any] = {a: a.pos for a in llm_agents}
+                final_pos: Dict[SugarAgent, Any] = {a: old_pos[a] for a in llm_agents}
+                for a, tpos in winners.items():
+                    if tpos is not None:
+                        final_pos[a] = tpos
+
+                # Step 3: enforce single occupancy against *stayers* and non-LLM occupied cells.
+                # Iteratively revert invalid movers until stable.
+                for _ in range(max(1, len(llm_agents))):
+                    changed = False
+
+                    # Cannot move into a non-LLM occupied cell.
+                    for a, tpos in list(final_pos.items()):
+                        if tpos in occupied_by_non_llm and tpos != old_pos[a]:
+                            final_pos[a] = old_pos[a]
+                            changed = True
+
+                    # Resolve duplicates among LLM final positions (e.g., moving into a stayer's cell).
+                    rev: Dict[Any, List[SugarAgent]] = {}
+                    for a, tpos in final_pos.items():
+                        rev.setdefault(tpos, []).append(a)
+
+                    for tpos, agents_here in rev.items():
+                        if len(agents_here) <= 1:
+                            continue
+                        # Prefer keeping the agent whose original position is this cell (a "stayer"/rightful occupant).
+                        rightful = [a for a in agents_here if old_pos[a] == tpos]
+                        if rightful:
+                            keep = rightful[0]
+                        else:
+                            keep = self.rng.choice(agents_here)
+                        for a in agents_here:
+                            if a is keep:
+                                continue
+                            final_pos[a] = old_pos[a]
+                            changed = True
+
+                    if not changed:
+                        break
+
+                # Step 4: apply batched moves by rebuilding the env grid mapping for these agents.
+                for a in llm_agents:
+                    # Remove old mapping if present.
+                    if self.env.grid_agents.get(old_pos[a]) == a:
+                        del self.env.grid_agents[old_pos[a]]
+                for a in llm_agents:
+                    a.pos = final_pos[a]
+                    self.env.grid_agents[a.pos] = a
+
+                # Step 5: harvest + metrics update per agent (after movement is finalized)
+                for agent in llm_agents:
+                    decision_data = decision_by_agent.get(agent, {})
+                    target_pos = desired.get(agent)
+
+                    rewards = agent._harvest_and_update_metrics(self.env)
+                    
+                    # Record move history for LLM agents
+                    if hasattr(agent, 'move_history'):
+                        agent.move_history.append({
+                            "tick": self.tick,
+                            "pos": agent.pos,
+                            "action": target_pos,
+                            "wealth": agent.wealth,
+                            "spice": agent.spice,
+                            "sugar_harvested": rewards["sugar_harvested"],
+                            "spice_harvested": rewards.get("spice_harvested", 0),
+                        })
+                        
+                    # Record Action in Trajectory
+                    action_record = SugarActionRecord(
+                        agent_id=agent.agent_id,
+                        system_prompt=decision_data.get("system_prompt", ""),
+                        user_prompt=decision_data.get("user_prompt", ""),
+                        raw_response=decision_data.get("raw_response", ""),
+                        parsed_move=target_pos,
+                        reward_sugar=rewards["sugar_harvested"],
+                        reward_spice=rewards["spice_harvested"],
+                        metabolic_cost_sugar=agent.metabolism,
+                        metabolic_cost_spice=agent.metabolism_spice,
+                    )
+                    current_timestep.actions.append(action_record)
+
+                    # Log LLM interaction to debug logger
+                    from redblackbench.sugarscape.debug_logger import LLMInteraction
+                    llm_interaction = LLMInteraction(
+                        tick=self.tick,
+                        agent_id=agent.agent_id,
+                        agent_name=agent.name,
+                        interaction_type="movement",
+                        system_prompt=decision_data.get("system_prompt", ""),
+                        user_prompt=decision_data.get("user_prompt", ""),
+                        raw_response=decision_data.get("raw_response", ""),
+                        parsed_action=str(target_pos) if target_pos else "",
+                        input_tokens=0,  # TODO: Extract from provider if available
+                        output_tokens=0,  # TODO: Extract from provider if available
+                        latency_ms=0.0,  # TODO: Track latency
+                        # New fields for goal and nearby agents analysis
+                        goal_preset=getattr(agent, 'goal_prompt', '')[:50] if hasattr(agent, 'goal_prompt') else "",
+                        nearby_agents_critical=decision_data.get("nearby_agents_critical", 0),
+                        nearby_agents_struggling=decision_data.get("nearby_agents_struggling", 0),
+                        nearby_agents_total=decision_data.get("nearby_agents_total", 0),
+                    )
+                    self.debug_logger.log_llm_interaction(llm_interaction)
 
         # Re-shuffle not needed since we processed in groups, but good for next tick?
         # self.rng.shuffle(self.agents) # Done at start
