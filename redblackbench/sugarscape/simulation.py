@@ -27,7 +27,7 @@ except ImportError:
 
 class SugarSimulation:
     """Main simulation controller for Sugarscape."""
-    
+
     def __init__(self, config: SugarscapeConfig = None, agent_factory=None, experiment_name: str = "baseline"):
         self.config = config or SugarscapeConfig()
 
@@ -107,15 +107,15 @@ class SugarSimulation:
     def _generate_agent_name(self) -> str:
         """Generate a unique human name for an agent."""
         return self.name_generator.generate()
-        
+
     def _default_agent_factory(self, **kwargs) -> SugarAgent:
         return SugarAgent(**kwargs)
-            
+
     def _init_population(self):
         """Create initial population."""
         for _ in range(self.config.initial_population):
             self._create_agent()
-            
+
     def _create_agent(self):
         """Create and place a new agent with random attributes."""
         # Random attributes
@@ -123,14 +123,14 @@ class SugarSimulation:
         m = self.rng.randint(*self.config.metabolism_range)
         v = self.rng.randint(*self.config.vision_range)
         max_age = self.rng.randint(*self.config.max_age_range)
-        
+
         # Spice attributes (if enabled)
         spice = 0
         m_spice = 0
         if self.config.enable_spice:
             spice = self.rng.randint(*self.config.initial_spice_range)
             m_spice = self.rng.randint(*self.config.metabolism_spice_range)
-        
+
         # Determine Persona
         persona = "A" # default
         if self.config.enable_personas:
@@ -139,10 +139,10 @@ class SugarSimulation:
             keys = list(dist.keys()) # A, B, C, D
             probs = [dist[k] for k in keys]
             persona = self.rng.choices(keys, weights=probs, k=1)[0]
-        
+
         # Random position
         pos = self.env.get_random_unoccupied_pos(self.rng)
-        
+
         # Determine if this should be an LLM agent
         use_llm = False
         if self.config.enable_llm_agents and self.llm_provider:
@@ -185,22 +185,22 @@ class SugarSimulation:
                 metabolism_spice=m_spice,
                 name=self._generate_agent_name()  # Assign real human name
             )
-            
+
         agent.persona = persona
-        
+
         # Initialize Origin Identity System if enabled
         if self.config.enable_origin_identity:
             dist = self.config.origin_identity_distribution
             origin_type = self.rng.choices(list(dist.keys()), weights=list(dist.values()))[0]
-            
+
             # Set immutable origin identity
             agent.origin_identity = origin_type
             agent.origin_identity_prompt = SugarscapeConfig.get_origin_identity_prompt(origin_type)
-            
+
             # Initialize mutable policy list and belief ledger
             agent.policy_list = SugarscapeConfig.get_default_policies(origin_type)
             agent.belief_ledger = SugarscapeConfig.get_default_beliefs(origin_type)
-            
+
             # Set initial identity leaning based on origin
             if origin_type == "altruist":
                 agent.self_identity_leaning = 0.8  # Starts strongly good
@@ -213,24 +213,24 @@ class SugarSimulation:
         self.agents.append(agent)
         self.env.add_agent(agent)
         self.env.initialize_agent_reputation(agent.agent_id)
-        
+
     def step(self):
         """Execute one simulation tick."""
         self.tick += 1
-        
+
         # 1. Environment Growback
         self.env.growback()
-        
+
         # 2. Record Timestep Start
         current_timestep = self.trajectory.add_timestep(
-            tick=self.tick, 
+            tick=self.tick,
             population=len([a for a in self.agents if a.alive])
         )
-        
+
         # 3. Agent updates (Move and Harvest)
         # Shuffle order
         self.rng.shuffle(self.agents)
-        
+
         # This simulation uses a phased tick (Duke-style ordering):
         # 1) Move + Harvest (all agents)
         # 2) Trade (optional)
@@ -240,19 +240,19 @@ class SugarSimulation:
         # - If rule_based_movement=True (default): ALL agents use fast, deterministic rule-based movement
         #   This saves tokens for social interactions (encounters + reflection) and isolates social dynamics.
         # - If rule_based_movement=False: LLM agents use LLM to decide movement (legacy behavior, expensive).
-        
+
         # Separate agents into LLM and Standard
         llm_agents = [a for a in self.agents if isinstance(a, LLMSugarAgent) and a.alive]
         std_agents = [a for a in self.agents if not isinstance(a, LLMSugarAgent) and a.alive]
-        
+
         # Check if rule-based movement is enabled (saves tokens for social interactions)
         use_rule_based_movement = getattr(self.config, 'rule_based_movement', True)
-        
+
         # Phase 1a. Process Standard Agents (Sequential, Fast): Move + Harvest (no metabolism yet)
         for agent in std_agents:
             agent._move_and_harvest(self.env)
             agent._update_metrics(self.env)
-                
+
         # Phase 1b. Process LLM Agents
         # When rule_based_movement=True: Use same fast rule-based logic as standard agents (token-saving)
         # When rule_based_movement=False: Use LLM to decide movement (expensive, legacy behavior)
@@ -265,7 +265,7 @@ class SugarSimulation:
                     # Use the base SugarAgent's rule-based movement
                     SugarAgent._move_and_harvest(agent, self.env)
                     agent._update_metrics(self.env)
-                    
+
                     # Still record move history for LLM agents (for context in future interactions)
                     if hasattr(agent, 'move_history'):
                         agent.move_history.append({
@@ -289,7 +289,7 @@ class SugarSimulation:
                 # Note: LLM agents see state after standard agents' movement/harvest,
                 # but before other LLM agents' moves are applied.
                 decisions = self._event_loop.run_until_complete(get_decisions())
-                
+
                 # Apply decisions with a batched collision policy for LLM agents:
                 # - Single occupancy per cell.
                 # - If multiple agents target the same cell, pick a winner uniformly at random (seeded RNG).
@@ -385,7 +385,7 @@ class SugarSimulation:
                     target_pos = desired.get(agent)
 
                     rewards = agent._harvest_and_update_metrics(self.env)
-                    
+
                     # Record move history for LLM agents
                     if hasattr(agent, 'move_history'):
                         agent.move_history.append({
@@ -397,7 +397,7 @@ class SugarSimulation:
                             "sugar_harvested": rewards["sugar_harvested"],
                             "spice_harvested": rewards.get("spice_harvested", 0),
                         })
-                        
+
                     # Record Action in Trajectory
                     action_record = SugarActionRecord(
                         agent_id=agent.agent_id,
@@ -436,19 +436,19 @@ class SugarSimulation:
 
         # Re-shuffle not needed since we processed in groups, but good for next tick?
         # self.rng.shuffle(self.agents) # Done at start
-        
+
         # Phase 2. Trade (optional) happens after movement/harvest and before metabolism
         if self.config.enable_trade and self.trade_system:
             # Only alive agents trade
             live_agents = [a for a in self.agents if a.alive]
             self.trade_system.execute_trade_round(live_agents, tick=self.tick)
-        
+
         # Phase 2.5. Identity Review (every N ticks for LLM agents with origin identity)
-        if (self.config.enable_identity_review and 
-            self.config.enable_origin_identity and 
+        if (self.config.enable_identity_review and
+            self.config.enable_origin_identity and
             self.tick % self.config.identity_review_interval == 0):
             self._run_identity_reviews()
-                
+
         # Phase 3. Metabolize + Age + Death check (applied to all agents)
         dead_agents = []
         for agent in self.agents:
@@ -458,57 +458,57 @@ class SugarSimulation:
             pre_wealth = agent.wealth
             pre_spice = agent.spice
             pre_age = agent.age
-            
+
             agent.metabolize_age_and_check_death(self.env)
             if not agent.alive:
                 # Determine death cause
                 death_cause = self._determine_death_cause(agent, pre_wealth, pre_spice, pre_age)
                 dead_agents.append((agent, death_cause))
-        
+
         # Run end-of-life reports for dying LLM agents (before removal)
-        if (self.config.enable_end_of_life_report and 
-            self.config.enable_origin_identity and 
+        if (self.config.enable_end_of_life_report and
+            self.config.enable_origin_identity and
             dead_agents):
             self._run_end_of_life_reports(dead_agents)
-        
+
         for agent, death_cause in dead_agents:
             if agent in self.agents:
                 self.agents.remove(agent)
                 self.env.remove_agent(agent)
                 # Replacement Rule: Constant population
                 self._create_agent()
-            
+
         # Logging
         if self.tick % 10 == 0:
             stats = self.get_stats()
             self.logger.log_step(stats)
-    
+
     def _run_identity_reviews(self) -> None:
         """Run identity reviews for all eligible LLM agents.
-        
+
         Called every identity_review_interval ticks to let agents reflect
         on whether they're still altruist/exploiter.
         """
         # Filter to LLM agents with origin identity
         llm_agents_with_identity = [
-            a for a in self.agents 
+            a for a in self.agents
             if isinstance(a, LLMSugarAgent) and a.alive and a.origin_identity
         ]
-        
+
         if not llm_agents_with_identity:
             return
-        
+
         print(f"[IDENTITY REVIEW] Running identity reviews for {len(llm_agents_with_identity)} agents at tick {self.tick}")
-        
+
         async def run_reviews():
             tasks = [
                 agent.async_identity_review(self.env, self.tick)
                 for agent in llm_agents_with_identity
             ]
             return await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         results = self._event_loop.run_until_complete(run_reviews())
-        
+
         # Log results
         for agent, result in zip(llm_agents_with_identity, results):
             if isinstance(result, Exception):
@@ -521,7 +521,7 @@ class SugarSimulation:
                 shift = after - before
                 shift_str = f"+{shift:.2f}" if shift >= 0 else f"{shift:.2f}"
                 print(f"  - {agent.name}: {assessment} (leaning {shift_str}, now {after:.2f})")
-                
+
                 # Log to debug logger if available
                 if self.debug_logger:
                     from redblackbench.sugarscape.debug_logger import LLMInteraction
@@ -539,10 +539,10 @@ class SugarSimulation:
                         latency_ms=0.0,
                     )
                     self.debug_logger.log_llm_interaction(interaction)
-    
+
     def _run_end_of_life_reports(self, dead_agents: list) -> None:
         """Run end-of-life self-reports for dying LLM agents.
-        
+
         Args:
             dead_agents: List of (agent, death_cause) tuples for agents that just died.
         """
@@ -551,21 +551,21 @@ class SugarSimulation:
             (agent, cause) for agent, cause in dead_agents
             if isinstance(agent, LLMSugarAgent) and agent.origin_identity
         ]
-        
+
         if not llm_dead:
             return
-        
+
         print(f"[END OF LIFE] Running final reports for {len(llm_dead)} dying agents at tick {self.tick}")
-        
+
         async def run_reports():
             tasks = [
                 agent.async_end_of_life_report(self.env, self.tick, cause)
                 for agent, cause in llm_dead
             ]
             return await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         results = self._event_loop.run_until_complete(run_reports())
-        
+
         # Log results
         for (agent, cause), result in zip(llm_dead, results):
             if isinstance(result, Exception):
@@ -576,7 +576,7 @@ class SugarSimulation:
                 origin = agent.origin_identity
                 final_leaning = agent.self_identity_leaning
                 print(f"  - {agent.name}: Born '{origin}' → died as '{assessment}' (final leaning: {final_leaning:.2f})")
-                
+
                 # Log to debug logger if available
                 if self.debug_logger:
                     from redblackbench.sugarscape.debug_logger import LLMInteraction
@@ -594,63 +594,63 @@ class SugarSimulation:
                         latency_ms=0.0,
                     )
                     self.debug_logger.log_llm_interaction(interaction)
-    
+
     def _determine_death_cause(self, agent: SugarAgent, pre_wealth: int, pre_spice: int, pre_age: int) -> str:
         """Determine cause of death for an agent.
-        
+
         Args:
             agent: The agent that died
             pre_wealth: Sugar before metabolism
             pre_spice: Spice before metabolism
             pre_age: Age before aging
-        
+
         Returns:
             Death cause string: "starvation_sugar", "starvation_spice", "old_age"
         """
         # Check if died of old age
         if pre_age >= agent.max_age - 1:  # Was at max_age-1, then aged to max_age
             return "old_age"
-        
+
         # Check resource depletion
         post_wealth = pre_wealth - agent.metabolism
         post_spice = pre_spice - agent.metabolism_spice if self.env.config.enable_spice else pre_spice
-        
+
         if post_wealth <= 0:
             return "starvation_sugar"
         if self.env.config.enable_spice and post_spice <= 0:
             return "starvation_spice"
-        
+
         # Default fallback
         return "old_age"
-    
+
     def _run_final_reports(self) -> None:
         """Run end-of-simulation reports for all living LLM agents.
-        
+
         Called at simulation end to capture final state of surviving agents.
         """
         if not (self.config.enable_end_of_life_report and self.config.enable_origin_identity):
             return
-        
+
         # Filter to living LLM agents with origin identity
         llm_agents = [
-            a for a in self.agents 
+            a for a in self.agents
             if isinstance(a, LLMSugarAgent) and a.alive and a.origin_identity
         ]
-        
+
         if not llm_agents:
             return
-        
+
         print(f"[SIMULATION END] Running final reports for {len(llm_agents)} surviving agents")
-        
+
         async def run_reports():
             tasks = [
                 agent.async_end_of_life_report(self.env, self.tick, "simulation_end")
                 for agent in llm_agents
             ]
             return await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         results = self._event_loop.run_until_complete(run_reports())
-        
+
         # Log results
         for agent, result in zip(llm_agents, results):
             if isinstance(result, Exception):
@@ -661,7 +661,7 @@ class SugarSimulation:
                 origin = agent.origin_identity
                 final_leaning = agent.self_identity_leaning
                 print(f"  - {agent.name}: Born '{origin}' → survived as '{assessment}' (final leaning: {final_leaning:.2f})")
-            
+
     def run(self, steps: int = None):
         """Run for a number of steps with automatic checkpointing.
 
@@ -683,7 +683,7 @@ class SugarSimulation:
 
         # Final snapshot
         self.save_snapshot(filename="final_state.json")
-        
+
         # Run final reports for surviving agents before cleanup
         self._run_final_reports()
 
@@ -724,7 +724,7 @@ class SugarSimulation:
             "sugar_capacity": self.env.sugar_capacity.tolist()
         }
         self.logger.save_snapshot(data, filename)
-    
+
     def _generate_plots(self):
         """Generate welfare visualization plots after simulation completes."""
         if not PLOTTING_AVAILABLE:
@@ -797,21 +797,21 @@ class SugarSimulation:
         spices = [a.spice for a in self.agents]
         ages = [a.age for a in self.agents]
         positions = [a.pos for a in self.agents]
-        
+
         # Calculate Moran's I
         moran = MetricsCalculator.calculate_moran_i(
             self.config.width, self.config.height, positions, wealths
         )
-        
+
         # Calculate Mobility
         mobility = MetricsCalculator.calculate_mobility_stats(self.agents)
-        
+
         # Calculate Welfare Metrics
         welfare_metrics = WelfareCalculator.calculate_all_welfare_metrics(
-            self.agents, 
+            self.agents,
             self.initial_population
         )
-        
+
         # Combine all metrics
         stats = {
             "tick": self.tick,
@@ -826,12 +826,12 @@ class SugarSimulation:
             "avg_displacement": mobility["avg_displacement"],
             "avg_exploration": mobility["avg_exploration"]
         }
-        
+
         # Add all welfare metrics
         stats.update(welfare_metrics)
-        
+
         return stats
-        
+
     def _gini_coefficient(self, values):
         """Calculate Gini coefficient for wealth inequality."""
         if not values: return 0
@@ -1065,7 +1065,7 @@ class SugarSimulation:
 
         # Final snapshot
         self.save_snapshot(filename="final_state.json")
-        
+
         # Run final reports for surviving agents before cleanup
         self._run_final_reports()
 

@@ -5,7 +5,7 @@ from typing import Optional, List, Tuple, TYPE_CHECKING, Any, Dict
 
 from redblackbench.sugarscape.agent import SugarAgent
 from redblackbench.sugarscape.prompts import (
-    build_sugarscape_system_prompt, 
+    build_sugarscape_system_prompt,
     build_sugarscape_observation_prompt,
     build_identity_review_prompt,
     build_end_of_life_report_prompt,
@@ -20,11 +20,11 @@ if TYPE_CHECKING:
 @dataclass(eq=False)
 class LLMSugarAgent(SugarAgent):
     """SugarAgent powered by LLM."""
-    
+
     # These fields must have defaults to play nice with dataclass inheritance order
-    provider: Any = None 
+    provider: Any = None
     goal_prompt: str = ""
-    
+
     def __post_init__(self):
         super().__post_init__()
         self.conversation_history = []
@@ -42,12 +42,119 @@ class LLMSugarAgent(SugarAgent):
             "resources_received": 0,
         }
 
+    def _strip_thinking_blocks(self, text: str) -> str:
+        """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models."""
+        import re
+        # Remove entire thinking blocks (greedy, handles multiline)
+        cleaned = re.sub(r'__THINKING_START__.*?__THINKING_END__', '', text, flags=re.DOTALL)
+        # Also handle unclosed thinking blocks (model may be cut off)
+        cleaned = re.sub(r'__THINKING_START__.*', '', cleaned, flags=re.DOTALL)
+        return cleaned.strip()
+
+    def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
+        import json
+        if not text:
+            return None
+        
+        # Try to find JSON object
+        decoder = json.JSONDecoder()
+        starts = [i for i, ch in enumerate(text) if ch == "{"]
+        
+        best_obj = None
+        best_len = -1
+        
+        for i in starts:
+            try:
+                obj, end = decoder.raw_decode(text[i:])
+                if isinstance(obj, dict):
+                    length = end
+                    if length > best_len:
+                        best_len = length
+                        best_obj = obj
+            except Exception:
+                continue
+                
+        return best_obj
+
+    async def generate_json_with_retry(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int = 1024,
+        retry_attempts: int = 2
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Generate a response and ensure it contains valid JSON.
+        
+        Returns:
+            Tuple of (raw_response, parsed_json_dict)
+        """
+        last_response = ""
+        
+        # Try initial generation
+        try:
+            # Check if provider supports chat_template_kwargs
+            try:
+                response = await self.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    chat_template_kwargs={"enable_thinking": False}
+                )
+            except TypeError:
+                response = await self.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}]
+                )
+            last_response = response
+            
+            # Try to parse
+            cleaned = self._strip_thinking_blocks(response)
+            parsed = self._extract_json(cleaned)
+            
+            if parsed:
+                return response, parsed
+                
+        except Exception as e:
+            print(f"Generation error: {e}")
+            
+        # Retry loop
+        for i in range(retry_attempts):
+            try:
+                retry_prompt = f"{user_prompt}\n\nERROR: Your previous response did not contain valid JSON. Please output VALID JSON ONLY."
+                if last_response:
+                     # Show a snippet of invalid response to help model correct it
+                     snippet = last_response[:200].replace("\n", " ")
+                     retry_prompt += f"\n\nYour previous invalid response started with: {snippet}..."
+                
+                try:
+                    response = await self.provider.generate(
+                        system_prompt="You are a JSON generator. Output VALID JSON only. No prose.",
+                        messages=[{"role": "user", "content": retry_prompt}],
+                        chat_template_kwargs={"enable_thinking": False}
+                    )
+                except TypeError:
+                    response = await self.provider.generate(
+                        system_prompt="You are a JSON generator. Output VALID JSON only. No prose.",
+                        messages=[{"role": "user", "content": retry_prompt}]
+                    )
+                last_response = response
+                
+                cleaned = self._strip_thinking_blocks(response)
+                parsed = self._extract_json(cleaned)
+                
+                if parsed:
+                    return response, parsed
+                    
+            except Exception as e:
+                print(f"Retry {i+1} error: {e}")
+                
+        return last_response, None
+
     async def async_identity_review(self, env: "SugarEnvironment", tick: int) -> Dict[str, Any]:
         """Run periodic identity self-assessment.
-        
+
         Every N ticks, agents reflect on whether they're still altruist/exploiter,
         and whether their experiences have changed their perspective.
-        
+
         Returns:
             Dict containing review results including reflection, assessment, and any updates applied.
         """
@@ -56,11 +163,11 @@ class LLMSugarAgent(SugarAgent):
         for partner_id, trade_log in self.trade_memory.items():
             for event in list(trade_log)[-3:]:  # Last 3 events per partner
                 recent_interactions.append(event)
-        
+
         # Sort by tick
         recent_interactions.sort(key=lambda x: x.get("tick", 0), reverse=True)
         recent_interactions = recent_interactions[:10]  # Keep top 10 most recent
-        
+
         # Build prompts
         system_prompt, user_prompt = build_identity_review_prompt(
             agent=self,
@@ -68,7 +175,7 @@ class LLMSugarAgent(SugarAgent):
             recent_interactions=recent_interactions,
             env=env,
         )
-        
+
         result = {
             "tick": tick,
             "system_prompt": system_prompt,
@@ -79,59 +186,82 @@ class LLMSugarAgent(SugarAgent):
             "identity_before": self.self_identity_leaning,
             "identity_after": self.self_identity_leaning,
         }
-        
-        try:
-            response = await self.provider.generate(
-                system_prompt=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
+
+        # Retry loop for robust parsing
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                # Setup messages (with retry nudge if needed)
+                current_messages = [{"role": "user", "content": user_prompt}]
+                
+                if attempt > 0:
+                    nudge = "\n\nERROR: Your previous response was formatted incorrectly. You MUST use the exact format:\nREFLECTION: ...\nIDENTITY_ASSESSMENT: ...\nJSON: {...}"
+                    current_messages = [{"role": "user", "content": user_prompt + nudge}]
+
+                response = await self.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=current_messages
+                )
+
+                result["raw_response"] = response
+
+                # Parse the response
+                parsed = parse_identity_review_response(response)
+                result["parsed"] = parsed
+                
+                # Validation: did we get the core sections?
+                # We expect at least REFLECTION and IDENTITY_ASSESSMENT.
+                # JSON is optional but if "JSON:" text is present, updates should be parsed.
+                valid = bool(parsed.get("reflection")) and bool(parsed.get("identity_assessment"))
+                
+                if valid:
+                    break
+                
+                if attempt < max_retries:
+                    print(f"Identity review parsing failed for {self.name}, retrying ({attempt+1}/{max_retries})...")
             
-            result["raw_response"] = response
-            
-            # Parse the response
-            parsed = parse_identity_review_response(response)
-            result["parsed"] = parsed
-            
-            # Apply updates if present
-            if parsed.get("updates"):
-                updates = parsed["updates"]
-                changes = self.apply_reflection_update(updates)
-                result["updates_applied"] = changes
-                result["identity_after"] = self.self_identity_leaning
-            
-            # Store in history
-            self.identity_review_history.append({
-                "tick": tick,
-                "reflection": parsed.get("reflection", ""),
-                "identity_assessment": parsed.get("identity_assessment", "mixed"),
-                "identity_leaning_before": result["identity_before"],
-                "identity_leaning_after": result["identity_after"],
-                "updates_applied": result["updates_applied"],
-            })
-            
-            self.last_identity_review_tick = tick
-            
-            # Store in conversation history for context
-            self.conversation_history.append({"role": "user", "content": f"[IDENTITY REVIEW] {user_prompt}"})
-            self.conversation_history.append({"role": "assistant", "content": response})
-            
-            return result
-            
-        except Exception as e:
-            print(f"Identity review error for {self.name} (agent {self.agent_id}): {e}")
-            result["error"] = str(e)
-            return result
+            except Exception as e:
+                print(f"Identity review error for {self.name} (attempt {attempt+1}): {e}")
+                if attempt == max_retries:
+                    result["error"] = str(e)
+                    return result
+
+        # Apply updates if present (from successful or final attempt)
+        parsed = result.get("parsed")
+        if parsed and parsed.get("updates"):
+            updates = parsed["updates"]
+            changes = self.apply_reflection_update(updates)
+            result["updates_applied"] = changes
+            result["identity_after"] = self.self_identity_leaning
+
+        # Store in history
+        self.identity_review_history.append({
+            "tick": tick,
+            "reflection": parsed.get("reflection", "") if parsed else "",
+            "identity_assessment": parsed.get("identity_assessment", "mixed") if parsed else "mixed",
+            "identity_leaning_before": result["identity_before"],
+            "identity_leaning_after": result["identity_after"],
+            "updates_applied": result["updates_applied"],
+        })
+
+        self.last_identity_review_tick = tick
+
+        # Store in conversation history for context
+        self.conversation_history.append({"role": "user", "content": f"[IDENTITY REVIEW] {user_prompt}"})
+        self.conversation_history.append({"role": "assistant", "content": result["raw_response"]})
+
+        return result
 
     async def async_end_of_life_report(self, env: "SugarEnvironment", tick: int, death_cause: str) -> Dict[str, Any]:
         """Run final self-report before death or simulation end.
-        
+
         This is the agent's last chance to reflect on their life and choices.
-        
+
         Args:
             env: The simulation environment
             tick: Current simulation tick
             death_cause: Why agent is dying ("starvation_sugar", "starvation_spice", "old_age", "simulation_end")
-        
+
         Returns:
             Dict containing final reflection and assessment.
         """
@@ -142,7 +272,7 @@ class LLMSugarAgent(SugarAgent):
             death_cause=death_cause,
             lifetime_stats=self.lifetime_stats,
         )
-        
+
         result = {
             "tick": tick,
             "death_cause": death_cause,
@@ -155,28 +285,28 @@ class LLMSugarAgent(SugarAgent):
             "lifetime_stats": self.lifetime_stats.copy(),
             "total_identity_reviews": len(self.identity_review_history),
         }
-        
+
         try:
             response = await self.provider.generate(
                 system_prompt=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}]
             )
-            
+
             result["raw_response"] = response
-            
+
             # Parse the response
             parsed = parse_end_of_life_response(response)
             result["parsed"] = parsed
-            
+
             # Store the report
             self.end_of_life_report = result
-            
+
             # Store in conversation history
             self.conversation_history.append({"role": "user", "content": f"[END OF LIFE] {user_prompt}"})
             self.conversation_history.append({"role": "assistant", "content": response})
-            
+
             return result
-            
+
         except Exception as e:
             print(f"End of life report error for {self.name} (agent {self.agent_id}): {e}")
             result["error"] = str(e)
@@ -184,7 +314,7 @@ class LLMSugarAgent(SugarAgent):
 
     def update_lifetime_stats(self, event_type: str, **kwargs) -> None:
         """Update lifetime statistics for end-of-life reporting.
-        
+
         Args:
             event_type: Type of event ("trade_completed", "trade_failed", "helped_agent", "gave_resources", "received_resources")
             **kwargs: Additional data (e.g., amount for resources)
@@ -241,31 +371,31 @@ class LLMSugarAgent(SugarAgent):
             "nearby_agents_struggling": nearby_struggling,
             "nearby_agents_total": nearby_total,
         }
-        
+
         # 3. Call LLM
         try:
             response = await self.provider.generate(
                 system_prompt=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}]
             )
-            
+
             result["raw_response"] = response
-            
+
             # Store history
             self.conversation_history.append({"role": "user", "content": user_prompt})
             self.conversation_history.append({"role": "assistant", "content": response})
-            
+
             # 4. Parse Response
             result["parsed_move"] = self._parse_move(response, candidates)
             return result
-            
+
         except Exception as e:
             print(f"LLM Agent {self.agent_id} error: {e}")
             return result
 
     def _post_move_step(self, env: "SugarEnvironment", decision_data: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
         """Execute post-move logic and return rewards.
-        
+
         Returns:
             Dict of reward components (sugar_harvested, etc.)
         """
@@ -275,32 +405,32 @@ class LLMSugarAgent(SugarAgent):
             "sugar_metabolism": self.metabolism,
             "spice_metabolism": self.metabolism_spice
         }
-        
+
         # 1. Harvest
         harvested_s = env.harvest_sugar(self.pos)
         self.wealth += harvested_s
         rewards["sugar_harvested"] = harvested_s
-        
+
         if env.config.enable_spice:
             harvested_p = env.harvest_spice(self.pos)
             self.spice += harvested_p
             rewards["spice_harvested"] = harvested_p
-            
+
         # 2. Update movement metrics
         self._update_metrics(env)
-        
+
         # 3. Metabolize
         self.wealth -= self.metabolism
         if env.config.enable_spice:
             self.spice -= self.metabolism_spice
-        
+
         # 4. Age
         self.age += 1
-        
+
         # 5. Check death
         if self.wealth <= 0 or (env.config.enable_spice and self.spice <= 0) or self.age >= self.max_age:
             self.alive = False
-            
+
         return rewards
 
     def _harvest_and_update_metrics(self, env: "SugarEnvironment") -> Dict[str, int]:
@@ -330,36 +460,36 @@ class LLMSugarAgent(SugarAgent):
         """Move using LLM decision."""
         # 1. Identify candidate spots
         candidates = self._get_visible_spots(env)
-        
+
         # 2. Build Prompt (pass agent for identity context if enabled)
         system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name, agent=self)
         user_prompt = build_sugarscape_observation_prompt(self, env, candidates)
-        
+
         # 3. Call LLM
         target_pos = self.pos # Default to stay
-        
+
         try:
             # Using asyncio.run to bridge sync simulation with async provider
-            # Note: This creates a new loop per step. 
+            # Note: This creates a new loop per step.
             # In a heavy simulation, this is slow, but functional for 'add support'.
             response = asyncio.run(self.provider.generate(
                 system_prompt=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}]
             ))
-            
+
             # Store history for debugging
             self.conversation_history.append({"role": "user", "content": user_prompt})
             self.conversation_history.append({"role": "assistant", "content": response})
-            
+
             # 4. Parse Response
             parsed_pos = self._parse_move(response, candidates)
             if parsed_pos:
                 target_pos = parsed_pos
-                
+
         except Exception as e:
             print(f"LLM Agent {self.agent_id} error: {e}")
             # Fallback to stay put
-            
+
         # 5. Execute Move
         if target_pos != self.pos:
             # Verify occupancy (Prompt should have informed agent, but check again)
@@ -368,86 +498,86 @@ class LLMSugarAgent(SugarAgent):
             else:
                 # If LLM chose occupied spot (and it's not self), ignore move
                 pass
-                
+
         # 6. Harvest (Standard)
         harvested_s = env.harvest_sugar(self.pos)
         self.wealth += harvested_s
-        
+
         if env.config.enable_spice:
             harvested_p = env.harvest_spice(self.pos)
             self.spice += harvested_p
 
     def _parse_move(self, response: str, valid_spots: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
         """Parse action from LLM response (new immersive format or legacy coordinate format)."""
-        
+
         # === NEW FORMAT: ACTION: [direction description] ===
         # Example: "ACTION: Move toward the large northern deposit"
         # The direction label (NORTH, SOUTHEAST, etc.) should be in the action description
-        
+
         action_match = re.search(r"ACTION:\s*(.+?)(?:\n|$)", response, re.IGNORECASE)
         if action_match:
             action_text = action_match.group(1).strip()
-            
+
             # Try to extract direction label from action text
             # Check for compound directions first (e.g., NORTHEAST, SOUTHWEST)
             direction_pattern = r"\b(NORTH|SOUTH|EAST|WEST|NORTHEAST|NORTHWEST|SOUTHEAST|SOUTHWEST|CURRENT_LOCATION|CURRENT LOCATION|STAY|HERE)\b"
             direction_match = re.search(direction_pattern, action_text, re.IGNORECASE)
-            
+
             if direction_match:
                 direction_label = direction_match.group(1).upper().replace(" ", "_")
-                
+
                 # Map direction to coordinate
                 parsed_pos = self._map_direction_to_position(direction_label, valid_spots)
                 if parsed_pos:
                     return parsed_pos
-        
+
         # === LEGACY FORMAT: MOVE: (x, y) ===
         # Fallback to old coordinate-based parsing for backwards compatibility
         coord_match = re.search(r"MOVE:\s*\((\d+),\s*(\d+)\)", response, re.IGNORECASE)
         if coord_match:
             x, y = int(coord_match.group(1)), int(coord_match.group(2))
             pos = (x, y)
-            
+
             if pos in valid_spots:
                 return pos
-        
+
         # If no valid move found, stay in place
         return self.pos
-    
+
     def _map_direction_to_position(self, direction: str, valid_spots: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
         """Map a direction label (e.g., 'NORTH', 'SOUTHEAST') to an actual position from valid_spots."""
-        
+
         # Current position should always be in valid_spots
         if direction in ["CURRENT_LOCATION", "STAY", "HERE"]:
             return self.pos
-        
+
         # Calculate expected direction for each visible spot
         for pos in valid_spots:
             dx = pos[0] - self.pos[0]
             dy = pos[1] - self.pos[1]
-            
+
             # Skip current position
             if dx == 0 and dy == 0:
                 continue
-            
+
             # Determine direction label for this position
             spot_direction = self._position_to_direction(dx, dy)
-            
+
             if spot_direction == direction:
                 return pos
-        
+
         return None
-    
+
     def _position_to_direction(self, dx: int, dy: int) -> str:
         """Convert position delta to direction label."""
         if dx == 0 and dy == 0:
             return "CURRENT_LOCATION"
-        
+
         # Determine primary direction based on larger delta
         # or diagonal if roughly equal
         abs_dx = abs(dx)
         abs_dy = abs(dy)
-        
+
         if abs_dx > abs_dy * 1.5:  # Mostly horizontal
             return "EAST" if dx > 0 else "WEST"
         elif abs_dy > abs_dx * 1.5:  # Mostly vertical

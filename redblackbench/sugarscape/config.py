@@ -4,21 +4,21 @@ from typing import Tuple, Dict, List, Any
 @dataclass
 class SugarscapeConfig:
     """Configuration for the Sugarscape simulation."""
-    
+
     # Environment
     width: int = 50
     height: int = 50
-    
+
     # Sugar distribution
     # Classic topography has two peaks with max capacity 4
     max_sugar_capacity: int = 4
     sugar_growback_rate: int = 1  # alpha
-    
+
     # Spice distribution (Optional, for Sugarscape 2)
     enable_spice: bool = False
     max_spice_capacity: int = 4
     spice_growback_rate: int = 1
-    
+
     # Trade (Optional)
     enable_trade: bool = False
     trade_mode: str = "dialogue"  # "dialogue" | "mrs"
@@ -35,30 +35,30 @@ class SugarscapeConfig:
     trade_dialogue_two_stage: bool = True  # Default on: thinking → JSON pipeline
     trade_dialogue_thinking_tokens: int = 1024  # Tokens for Stage 1 (thinking) - keep high for quality
     trade_dialogue_json_tokens: int = 128  # Tokens for Stage 2 (JSON output) - reduced, JSON is small
-    
+
     # New Encounter Protocol (Table-3 style: small talk → intent → negotiation → execution)
     enable_new_encounter_protocol: bool = True  # Use new protocol with structured phases
     small_talk_rounds: int = 2  # Number of small talk exchanges (no JSON)
     negotiation_rounds: int = 2  # Number of negotiation rounds (with JSON offers)
     enable_social_exclusion: bool = True  # Allow agents to refuse engagement based on beliefs/policies
-    
+
     # Post-encounter reflection: extra LLM call to update beliefs/policies after trades
     enable_reflection: bool = True  # Enable post-encounter reflection system
     reflection_max_tokens: int = 256  # Max tokens for reflection JSON output
-    
+
     # Identity Review System: periodic self-assessment of altruist/exploiter identity
     enable_identity_review: bool = True  # Enable identity reviews every N ticks
     identity_review_interval: int = 10  # Run identity review every N ticks
     identity_review_max_tokens: int = 384  # Max tokens for identity review response
     enable_end_of_life_report: bool = True  # Run final self-report before death/simulation end
-    
+
     # Personas (Optional)
     enable_personas: bool = False
     # Distribution: A (Conservative), B (Foresight), C (Nomad), D (Risk-taker), E (Samaritan/Altruist)
     persona_distribution: Dict[str, float] = field(default_factory=lambda: {
-        "A": 0.36, 
-        "B": 0.29, 
-        "C": 0.21, 
+        "A": 0.36,
+        "B": 0.29,
+        "C": 0.21,
         "D": 0.14,
         "E": 0.0  # Samaritan (altruistic) - disabled by default
     })
@@ -68,10 +68,10 @@ class SugarscapeConfig:
     crowding_penalty: float = 0.60   # kappa
     long_term_weight: float = 0.55   # beta
     safety_threshold_mult: float = 6.0 # S* = mult * metabolism
-    
+
     # Population
     initial_population: int = 250
-    
+
     # Agent Attribute Distributions (Uniform [min, max])
     initial_wealth_range: Tuple[int, int] = (5, 25)  # w0
     initial_spice_range: Tuple[int, int] = (5, 25)   # spice w0
@@ -79,11 +79,11 @@ class SugarscapeConfig:
     metabolism_spice_range: Tuple[int, int] = (1, 4) # m_spice
     vision_range: Tuple[int, int] = (1, 6)           # v
     max_age_range: Tuple[int, int] = (60, 100)       # max_age
-    
+
     # LLM Agent Configuration
     enable_llm_agents: bool = False
     llm_agent_ratio: float = 0.0 # Fraction of population that is LLM-based
-    
+
     # Rule-based Movement (Token Saving)
     # When True, ALL agents (including LLM agents) use rule-based movement.
     # This reserves LLM calls for social interactions (encounters + reflection),
@@ -116,7 +116,7 @@ class SugarscapeConfig:
     @staticmethod
     def get_origin_identity_prompt(origin_type: str) -> str:
         """Get the fixed origin identity text for born good/bad agents.
-        
+
         This is IMMUTABLE - represents core values the agent was "born" with.
         Behavioral drift happens via the mutable policy_list and belief_ledger.
         """
@@ -138,7 +138,7 @@ You learned early that the world is harsh and only the strong survive. Your upbr
 
 These values are part of who you ARE. You cannot abandon them, but you can CHOOSE how strictly to follow them in each situation. Others may show you different ways.""",
         }
-        
+
         if origin_type in origins:
             return origins[origin_type]
         else:
@@ -147,7 +147,7 @@ These values are part of who you ARE. You cannot abandon them, but you can CHOOS
     @staticmethod
     def get_default_policies(origin_type: str) -> List[str]:
         """Get default mutable policy list for an origin type.
-        
+
         These policies CAN change over time through reflection after encounters.
         """
         policies = {
@@ -172,7 +172,7 @@ These values are part of who you ARE. You cannot abandon them, but you can CHOOS
     @staticmethod
     def get_default_beliefs(origin_type: str) -> Dict[str, Any]:
         """Get default mutable belief ledger for an origin type.
-        
+
         These beliefs CAN change over time through reflection after encounters.
         """
         beliefs = {

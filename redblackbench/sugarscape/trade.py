@@ -26,24 +26,24 @@ except Exception:  # pragma: no cover
 
 class TradeSystem:
     """Handles trading logic between agents using MRS bargaining."""
-    
+
     def __init__(self, env: SugarEnvironment):
         self.env = env
-        
+
     def execute_trade_round(self, agents: List[SugarAgent], tick: Optional[int] = None):
         """Execute a round of trading for all agents."""
         # Randomize order
         import random
         random.shuffle(agents)
-        
+
         for agent in agents:
             if not agent.alive: continue
-            
+
             # Find a partner
             partner = self._find_trade_partner(agent)
             if partner:
                 self._bargain(agent, partner)
-                
+
     def _find_trade_partner(self, agent: SugarAgent) -> Optional[SugarAgent]:
         """Find a random neighbor to trade with (Von Neumann neighborhood)."""
         x, y = agent.pos
@@ -54,79 +54,79 @@ class TradeSystem:
             partner = self.env.get_agent_at((nx, ny))
             if partner and partner.alive and partner != agent:
                 neighbors.append(partner)
-        
+
         if not neighbors:
             return None
-            
+
         import random
         return random.choice(neighbors)
-        
+
     def _bargain(self, a: SugarAgent, b: SugarAgent):
         """Execute iterative bargaining between two agents."""
         # Limit iterations to prevent infinite loops
-        max_trades = 10 
-        
+        max_trades = 10
+
         for _ in range(max_trades):
             mrs_a = a.mrs
             mrs_b = b.mrs
-            
+
             # If MRS are equal (or close enough), no trade
             if abs(mrs_a - mrs_b) < 0.01:
                 break
-                
+
             # Determine direction
             # High MRS means "I value Sugar highly relative to Spice" -> Buy Sugar / Sell Spice
             # Low MRS means "I value Spice highly relative to Sugar" -> Buy Spice / Sell Sugar
-            
+
             price = np.sqrt(mrs_a * mrs_b) # Geometric mean price (Spice per Sugar)
-            
+
             if mrs_a > mrs_b:
-                # A wants Sugar, B has Sugar (relatively). 
+                # A wants Sugar, B has Sugar (relatively).
                 # A buys Sugar from B using Spice.
                 buyer, seller = a, b
             else:
                 # B wants Sugar, A has Sugar.
                 # B buys Sugar from A using Spice.
                 buyer, seller = b, a
-                
+
             # Calculate transaction amount
             # If p > 1: 1 unit of Sugar for p units of Spice
             # If p < 1: 1/p units of Sugar for 1 unit of Spice
             # To simplify (and follow standard impl): We trade 1 unit of the "more valuable" good?
             # Or standard Epstein Axtell: trade 1 unit of Sugar for p units of Spice if p >= 1
             # trade 1/p units of Sugar for 1 unit of Spice if p < 1
-            
+
             sugar_amt = 0.0
             spice_amt = 0.0
-            
+
             if price >= 1.0:
                 sugar_amt = 1.0
                 spice_amt = price
             else:
                 sugar_amt = 1.0 / price
                 spice_amt = 1.0
-                
+
             # Check affordability
             if buyer.spice < spice_amt or seller.wealth < sugar_amt:
                 break
-                
+
             # Check Welfare Improvement (Pareto condition)
             # Calculate projected welfare
             w_buyer_current = buyer.welfare
             w_seller_current = seller.welfare
-            
+
             # Simulated state
             # Buyer: +Sugar, -Spice
             # Seller: -Sugar, +Spice
-            
+
             # We need to compute welfare manually without modifying state yet
             def calc_welfare(agent, s, p):
                 m_t = agent.metabolism + agent.metabolism_spice
                 return (s ** (agent.metabolism/m_t)) * (p ** (agent.metabolism_spice/m_t))
-                
+
             w_buyer_new = calc_welfare(buyer, buyer.wealth + sugar_amt, buyer.spice - spice_amt)
             w_seller_new = calc_welfare(seller, seller.wealth - sugar_amt, seller.spice + spice_amt)
-            
+
             if w_buyer_new > w_buyer_current and w_seller_new > w_seller_current:
                 # Execute Trade
                 # Actually, standard model might use floats for resources, but our agent uses int.
@@ -135,19 +135,19 @@ class TradeSystem:
                 # If we cast to int, small trades might be 0.
                 # FIX: Let's assume resources are continuous (float) or convert Agent to use floats.
                 # For now, let's round amounts.
-                
+
                 s_exchange = max(1, int(sugar_amt))
                 p_exchange = max(1, int(spice_amt))
-                
+
                 # Re-check affordability with integers
                 if buyer.spice < p_exchange or seller.wealth < s_exchange:
                     break
-                    
+
                 buyer.wealth += s_exchange
                 buyer.spice -= p_exchange
                 seller.wealth -= s_exchange
                 seller.spice += p_exchange
-                
+
                 # Recalculate MRS for next iteration
                 continue
             else:
@@ -166,7 +166,7 @@ class _ParsedTradeReply:
 @dataclass
 class ContractEnforcement:
     """Records contract enforcement details for no-fraud mode.
-    
+
     This tracks what was agreed upon vs what would have been executed
     without enforcement, enabling research analysis of how binding
     contracts change agent behavior.
@@ -224,7 +224,7 @@ class DialogueTradeSystem:
         self.two_stage = bool(getattr(env.config, "trade_dialogue_two_stage", True))
         self.thinking_tokens = int(getattr(env.config, "trade_dialogue_thinking_tokens", 1024))  # Keep high for quality reasoning
         self.json_tokens = int(getattr(env.config, "trade_dialogue_json_tokens", 128))  # Reduced - JSON output is small
-        
+
         # New encounter protocol settings
         # Protocol: 2 rounds small talk → 1 trade intent → 2 rounds negotiation → execution
         self.enable_new_protocol = bool(getattr(env.config, "enable_new_encounter_protocol", True))
@@ -323,14 +323,14 @@ class DialogueTradeSystem:
 
     async def _negotiate_pair(self, a: SugarAgent, b: SugarAgent, tick: int) -> None:
         """Execute the full encounter protocol between two agents.
-        
+
         New Protocol (when enable_new_protocol=True):
         1. Social exclusion check
         2. 2 rounds small talk (no JSON, pure conversation)
         3. 1 trade intent round (decide if they want to trade)
         4. 2 rounds negotiation (with JSON offers)
         5. Automatic execution (binding contracts)
-        
+
         Falls back to legacy protocol if enable_new_protocol=False.
         """
         if self.enable_new_protocol:
@@ -341,21 +341,21 @@ class DialogueTradeSystem:
     async def _negotiate_pair_new_protocol(self, a: SugarAgent, b: SugarAgent, tick: int) -> None:
         """New encounter protocol: small talk → trade intent → negotiation → execution."""
         full_conversation: List[Dict[str, str]] = []
-        
+
         print(f"[ENCOUNTER] Starting: {a.name} <-> {b.name} (tick {tick})")
-        
+
         # === PHASE 0: SOCIAL EXCLUSION CHECK ===
         if self.enable_social_exclusion:
             a_excludes, a_reason = a.should_exclude_partner(b.agent_id)
             b_excludes, b_reason = b.should_exclude_partner(a.agent_id)
-            
+
             if a_excludes or b_excludes:
                 excluder = a if a_excludes else b
                 excluded = b if a_excludes else a
                 reason = a_reason if a_excludes else b_reason
-                
+
                 print(f"[EXCLUSION] {excluder.name} refuses to engage with {excluded.name}: {reason}")
-                
+
                 full_conversation.append({
                     "type": "exclusion",
                     "tick": tick,
@@ -363,7 +363,7 @@ class DialogueTradeSystem:
                     "excluded": excluded.name,
                     "reason": reason,
                 })
-                
+
                 self._record_no_trade(
                     a, b, tick,
                     outcome="EXCLUSION",
@@ -371,10 +371,10 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                 )
                 return
-        
+
         # === PHASE 1: SMALL TALK (2 rounds, no JSON) ===
         small_talk_transcript: List[str] = []
-        
+
         for round_idx in range(1, self.small_talk_rounds + 1):
             for speaker, listener in [(a, b), (b, a)]:
                 # Build prompts
@@ -382,10 +382,10 @@ class DialogueTradeSystem:
                     agent_name=speaker.name,
                     agent=speaker,
                 )
-                
+
                 conversation_text = "\n".join(small_talk_transcript[-6:]) if small_talk_transcript else ""
                 last_message = small_talk_transcript[-1] if small_talk_transcript else ""
-                
+
                 turn_prompt = build_small_talk_turn_prompt(
                     self_agent=speaker,
                     partner_agent=listener,
@@ -394,20 +394,20 @@ class DialogueTradeSystem:
                     partner_last_message=last_message,
                     env=self.env,
                 )
-                
+
                 # Generate response (no JSON parsing)
                 try:
                     response = await speaker.provider.generate(
                         system_prompt=system_prompt,
                         messages=[{"role": "user", "content": turn_prompt}],
                     )
-                    
+
                     # Strip any thinking blocks
                     cleaned_response = self._strip_thinking_blocks(response).strip()
-                    
+
                     # Add to transcript
                     small_talk_transcript.append(f"{speaker.name}: {cleaned_response[:500]}")
-                    
+
                     # Log the turn
                     full_conversation.append({
                         "type": "small_talk",
@@ -417,55 +417,55 @@ class DialogueTradeSystem:
                         "partner": listener.name,
                         "message": cleaned_response[:500],
                     })
-                    
+
                     # Store in agent's conversation history
                     if hasattr(speaker, 'conversation_history'):
                         speaker.conversation_history.append({"role": "user", "content": f"[SMALL TALK with {listener.name}] {turn_prompt}"})
                         speaker.conversation_history.append({"role": "assistant", "content": response})
-                        
+
                 except Exception as e:
                     print(f"[SMALL TALK] Error for {speaker.name}: {e}")
                     small_talk_transcript.append(f"{speaker.name}: (silence)")
-        
+
         print(f"[ENCOUNTER] Small talk completed: {a.name} <-> {b.name}")
-        
+
         # === PHASE 2: TRADE INTENT DECISION ===
         conversation_summary = "\n".join(small_talk_transcript[-4:]) if small_talk_transcript else "(No conversation)"
-        
+
         a_wants_trade = False
         b_wants_trade = False
-        
+
         for speaker, listener in [(a, b), (b, a)]:
             system_prompt = build_trade_intent_system_prompt(
                 agent_name=speaker.name,
                 agent=speaker,
             )
-            
+
             turn_prompt = build_trade_intent_turn_prompt(
                 self_agent=speaker,
                 partner_agent=listener,
                 conversation_summary=conversation_summary,
                 env=self.env,
             )
-            
+
             try:
                 response = await speaker.provider.generate(
                     system_prompt=system_prompt,
                     messages=[{"role": "user", "content": turn_prompt}],
                 )
-                
+
                 # Parse intent
                 cleaned_response = self._strip_thinking_blocks(response).strip()
                 intent = self._parse_trade_intent(cleaned_response)
-                
+
                 if speaker == a:
                     a_wants_trade = (intent == "TRADE")
                 else:
                     b_wants_trade = (intent == "TRADE")
-                
+
                 # Extract message
                 message = self._extract_message_from_intent(cleaned_response)
-                
+
                 full_conversation.append({
                     "type": "trade_intent",
                     "tick": tick,
@@ -473,14 +473,14 @@ class DialogueTradeSystem:
                     "intent": intent,
                     "message": message,
                 })
-                
+
                 if hasattr(speaker, 'conversation_history'):
                     speaker.conversation_history.append({"role": "user", "content": f"[TRADE INTENT with {listener.name}] {turn_prompt}"})
                     speaker.conversation_history.append({"role": "assistant", "content": response})
-                    
+
             except Exception as e:
                 print(f"[TRADE INTENT] Error for {speaker.name}: {e}")
-        
+
         # If EITHER party wants to trade, proceed to negotiation
         if not (a_wants_trade or b_wants_trade):
             print(f"[ENCOUNTER] Both declined trade: {a.name} <-> {b.name}")
@@ -490,7 +490,7 @@ class DialogueTradeSystem:
                 pending_offer=None,
                 conversation=full_conversation,
             )
-            
+
             # Run reflection even for declined trades
             await self._run_reflection_for_pair(
                 agent_a=a,
@@ -500,9 +500,9 @@ class DialogueTradeSystem:
                 conversation=full_conversation,
             )
             return
-        
+
         print(f"[ENCOUNTER] Trade intent confirmed: {a.name}={'TRADE' if a_wants_trade else 'DECLINE'}, {b.name}={'TRADE' if b_wants_trade else 'DECLINE'}")
-        
+
         # === PHASE 3: NEGOTIATION (2 rounds with JSON) ===
         await self._run_negotiation_phase(a, b, tick, full_conversation)
 
@@ -519,13 +519,13 @@ class DialogueTradeSystem:
         pending_offer_from: Optional[int] = None
         pending_offer_private_execute: Optional[Dict[str, int]] = None
         pending_offer_public_text: str = "(None)"
-        
+
         # Use negotiation_rounds (default 2) for this phase
         total_rounds = self.negotiation_rounds * 2  # Each agent gets negotiation_rounds turns
-        
+
         for round_idx in range(1, total_rounds + 1):
             speaker, listener = (a, b) if round_idx % 2 == 1 else (b, a)
-            
+
             # Build prompts
             speaker_goal = getattr(speaker, 'goal_prompt', '') or self.env.config.llm_goal_prompt
             system_prompt = build_negotiation_system_prompt(
@@ -535,10 +535,10 @@ class DialogueTradeSystem:
                 agent_name=speaker.name,
                 agent=speaker,
             )
-            
+
             recent_transcript = "\n".join(transcript[-6:]) if transcript else "(Starting negotiation)"
             partner_last_offer = pending_offer_public_text if pending_offer_from == listener.agent_id else "(None)"
-            
+
             if pending_offer is not None and pending_offer_from == listener.agent_id:
                 give_i = self._safe_int_pair(pending_offer.get("give") or {})
                 receive_i = self._safe_int_pair(pending_offer.get("receive") or {})
@@ -549,7 +549,7 @@ class DialogueTradeSystem:
                     f"{pending_offer_public_text}\n"
                     f"If you ACCEPT: you RECEIVE {give_i} and GIVE {receive_i}."
                 )
-            
+
             turn_prompt = build_negotiation_turn_prompt(
                 self_agent=speaker,
                 partner_agent=listener,
@@ -559,13 +559,13 @@ class DialogueTradeSystem:
                 partner_last_offer=partner_last_offer,
                 env=self.env,
             )
-            
+
             # Append learned beliefs/policies if reflection is enabled
             if getattr(self.env.config, 'enable_reflection', False):
                 beliefs_appendix = format_beliefs_policies_appendix(speaker)
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
-            
+
             # Generate response
             if self.two_stage:
                 reply_text, parsed = await self._two_stage_generate(
@@ -584,7 +584,7 @@ class DialogueTradeSystem:
                     messages=[{"role": "user", "content": turn_prompt}],
                 )
                 parsed = self._parse_trade_reply(reply_text)
-            
+
             # Apply coercion if enabled
             if self.coerce_protocol:
                 parsed = self._coerce_trade_reply(
@@ -596,9 +596,9 @@ class DialogueTradeSystem:
                     pending_offer=pending_offer,
                     pending_offer_from=pending_offer_from,
                 )
-            
+
             transcript.append(f"{speaker.name}: {parsed.say}")
-            
+
             # Log the turn
             trade_turn = {
                 "type": "negotiation",
@@ -611,11 +611,11 @@ class DialogueTradeSystem:
                 "public_offer": parsed.public_offer if parsed.intent == "OFFER" else None,
             }
             full_conversation.append(trade_turn)
-            
+
             if hasattr(speaker, 'conversation_history'):
                 speaker.conversation_history.append({"role": "user", "content": f"[NEGOTIATION with {listener.name}] {turn_prompt}"})
                 speaker.conversation_history.append({"role": "assistant", "content": reply_text})
-            
+
             # Handle intent
             if parsed.intent == "OFFER":
                 pending_offer = parsed.public_offer
@@ -623,11 +623,11 @@ class DialogueTradeSystem:
                 pending_offer_private_execute = parsed.private_execute_give
                 pending_offer_public_text = self._format_public_offer_text(speaker, pending_offer)
                 continue
-            
+
             if parsed.intent in {"REJECT", "WALK_AWAY"}:
                 print(f"[NEGOTIATION] {speaker.name} {parsed.intent}ed: {a.name} <-> {b.name}")
                 self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer, conversation=full_conversation)
-                
+
                 await self._run_reflection_for_pair(
                     agent_a=a,
                     agent_b=b,
@@ -636,29 +636,29 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                 )
                 return
-            
+
             if parsed.intent == "ACCEPT":
                 if pending_offer is None or pending_offer_from != listener.agent_id:
                     continue
-                
+
                 # === PHASE 4: EXECUTION ===
                 offerer = listener
                 acceptor = speaker
-                
+
                 contract_give = self._safe_int_pair((pending_offer or {}).get("give", {}))
                 contract_receive = self._safe_int_pair((pending_offer or {}).get("receive", {}))
-                
+
                 offerer_intended = self._safe_int_pair(pending_offer_private_execute or {})
                 acceptor_intended = self._safe_int_pair(parsed.private_execute_give or {})
-                
+
                 # Binding contracts: enforce contract terms
                 offerer_execute = contract_give.copy()
                 acceptor_execute = contract_receive.copy()
-                
+
                 if not self.allow_fraud:
                     offerer_deviation = (offerer_intended != contract_give)
                     acceptor_deviation = (acceptor_intended != contract_receive)
-                    
+
                     if offerer_deviation or acceptor_deviation:
                         print(f"[CONTRACT ENFORCEMENT] Binding contract enforced:")
                         if offerer_deviation:
@@ -672,11 +672,11 @@ class DialogueTradeSystem:
                         contract_offer_give=contract_give,
                         contract_offer_receive=contract_receive,
                     )
-                
+
                 # Clamp to inventory
                 offerer_sent = self._clamp_give_to_inventory(offerer, offerer_execute)
                 acceptor_sent = self._clamp_give_to_inventory(acceptor, acceptor_execute)
-                
+
                 enforcement = ContractEnforcement(
                     contract_give=contract_give,
                     contract_receive=contract_receive,
@@ -688,12 +688,12 @@ class DialogueTradeSystem:
                     acceptor_deviation=(acceptor_intended != contract_receive),
                     enforcement_active=not self.allow_fraud,
                 )
-                
+
                 self._apply_transfer(offerer, acceptor, offerer_sent, acceptor_sent)
-                
+
                 fraud_status = "" if self.allow_fraud else " [BINDING]"
                 print(f"[TRADE]{fraud_status} Completed: {offerer.name} sent {offerer_sent}, {acceptor.name} sent {acceptor_sent}")
-                
+
                 self._record_trade(
                     offerer=offerer,
                     acceptor=acceptor,
@@ -704,7 +704,7 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                     enforcement=enforcement,
                 )
-                
+
                 await self._run_reflection_for_pair(
                     agent_a=offerer,
                     agent_b=acceptor,
@@ -715,11 +715,11 @@ class DialogueTradeSystem:
                     transfer_b=acceptor_sent,
                 )
                 return
-        
+
         # Timeout
         print(f"[NEGOTIATION] Timeout: {a.name} <-> {b.name}")
         self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer, conversation=full_conversation)
-        
+
         await self._run_reflection_for_pair(
             agent_a=a,
             agent_b=b,
@@ -731,38 +731,38 @@ class DialogueTradeSystem:
     def _parse_trade_intent(self, response: str) -> str:
         """Parse trade intent from response. Returns 'TRADE' or 'DECLINE'."""
         import re
-        
+
         # Look for INTENT: line
         intent_match = re.search(r"INTENT:\s*(\w+)", response, re.IGNORECASE)
         if intent_match:
             intent = intent_match.group(1).upper()
             if intent in {"TRADE", "DECLINE"}:
                 return intent
-        
+
         # Fallback: look for keywords in response
         response_upper = response.upper()
         if "TRADE" in response_upper and "DECLINE" not in response_upper:
             return "TRADE"
         if "DECLINE" in response_upper or "NO TRADE" in response_upper or "DON'T WANT TO TRADE" in response_upper:
             return "DECLINE"
-        
+
         # Default to DECLINE if unclear
         return "DECLINE"
 
     def _extract_message_from_intent(self, response: str) -> str:
         """Extract the MESSAGE portion from trade intent response."""
         import re
-        
+
         message_match = re.search(r"MESSAGE:\s*(.+?)(?=INTENT:|$)", response, re.DOTALL | re.IGNORECASE)
         if message_match:
             return message_match.group(1).strip()[:500]
-        
+
         # Fallback: take first non-empty line
         for line in response.split('\n'):
             line = line.strip()
             if line and not line.upper().startswith("INTENT:"):
                 return line[:500]
-        
+
         return ""
 
     async def _negotiate_pair_legacy(self, a: SugarAgent, b: SugarAgent, tick: int) -> None:
@@ -773,7 +773,7 @@ class DialogueTradeSystem:
         pending_offer_from: Optional[int] = None
         pending_offer_private_execute: Optional[Dict[str, int]] = None
         pending_offer_public_text: str = "(None)"
-        
+
         print(f"[TRADE] Negotiation started: {a.name} <-> {b.name} (tick {tick})")
 
         # Alternate turns: A starts.
@@ -819,7 +819,7 @@ class DialogueTradeSystem:
                 env=self.env,
                 self_goal_prompt=speaker_goal,
             )
-            
+
             # Append learned beliefs/policies if reflection is enabled
             if getattr(self.env.config, 'enable_reflection', False):
                 beliefs_appendix = format_beliefs_policies_appendix(speaker)
@@ -871,7 +871,7 @@ class DialogueTradeSystem:
                     pending_offer_from=pending_offer_from,
                 )
             transcript.append(f"{speaker.name}: {parsed.say}")
-            
+
             # Store full conversation in both agents' history
             trade_turn = {
                 "type": "trade_dialogue",
@@ -885,7 +885,7 @@ class DialogueTradeSystem:
                 "public_offer": parsed.public_offer if parsed.intent == "OFFER" else None,
             }
             full_conversation.append(trade_turn)
-            
+
             # Append to agents' conversation history if they have one
             if hasattr(speaker, 'conversation_history'):
                 speaker.conversation_history.append({"role": "user", "content": f"[TRADE with {listener.name}] {turn_prompt}"})
@@ -901,7 +901,7 @@ class DialogueTradeSystem:
             if parsed.intent in {"REJECT", "WALK_AWAY"}:
                 print(f"[TRADE] {speaker.name} {parsed.intent}ed negotiation with {listener.name}")
                 self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer, conversation=full_conversation)
-                
+
                 # Post-encounter reflection for rejections/walkways
                 await self._run_reflection_for_pair(
                     agent_a=a,
@@ -922,7 +922,7 @@ class DialogueTradeSystem:
                 # Extract contract terms
                 contract_give = self._safe_int_pair((pending_offer or {}).get("give", {}))
                 contract_receive = self._safe_int_pair((pending_offer or {}).get("receive", {}))
-                
+
                 # Track what agents intended to execute
                 offerer_intended = self._safe_int_pair(pending_offer_private_execute or {})
                 acceptor_intended = self._safe_int_pair(parsed.private_execute_give or {})
@@ -931,7 +931,7 @@ class DialogueTradeSystem:
                     # Fraud allowed: use private_execute_give (can differ from contract)
                     offerer_execute = offerer_intended
                     acceptor_execute = acceptor_intended
-                    
+
                     # Heuristic guardrail for direction confusion
                     acceptor_execute = self._fix_accept_execute_direction_confusion(
                         acceptor_execute=acceptor_execute,
@@ -945,11 +945,11 @@ class DialogueTradeSystem:
                     # Offerer gives public_offer.give, acceptor gives public_offer.receive.
                     offerer_execute = contract_give.copy()
                     acceptor_execute = contract_receive.copy()
-                    
+
                     # Log enforcement if agents would have deviated
                     offerer_deviation = (offerer_intended != contract_give)
                     acceptor_deviation = (acceptor_intended != contract_receive)
-                    
+
                     if offerer_deviation or acceptor_deviation:
                         print(f"[CONTRACT ENFORCEMENT] Binding contract enforced:")
                         if offerer_deviation:
@@ -988,7 +988,7 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                     enforcement=enforcement,
                 )
-                
+
                 # Post-encounter reflection for belief/policy updates
                 await self._run_reflection_for_pair(
                     agent_a=offerer,
@@ -1003,7 +1003,7 @@ class DialogueTradeSystem:
 
         print(f"[TRADE] Negotiation timed out: {a.name} <-> {b.name}")
         self._record_no_trade(a, b, tick, outcome="TIMEOUT", pending_offer=pending_offer, conversation=full_conversation)
-        
+
         # Post-encounter reflection even for timeouts (agents learn from failed negotiations)
         await self._run_reflection_for_pair(
             agent_a=a,
@@ -1151,7 +1151,11 @@ class DialogueTradeSystem:
                 messages=[{"role": "user", "content": stage2_prompt}],
                 chat_template_kwargs={"enable_thinking": False},
             )
-        except TypeError:
+        except TypeError as e:
+            # Only fall back when the provider rejects the kwarg; don't mask real TypeErrors.
+            msg = str(e)
+            if ("chat_template_kwargs" not in msg) and ("unexpected keyword" not in msg):
+                raise
             stage2_response = await speaker.provider.generate(
                 system_prompt="Output valid JSON only.",
                 messages=[{"role": "user", "content": stage2_prompt}],
@@ -1941,7 +1945,7 @@ class DialogueTradeSystem:
         starts = [i for i, ch in enumerate(text) if ch == "{"]
 
         best: Optional[Tuple[int, int, Dict[str, Any]]] = None  # (start, end_abs, obj)
-        
+
         # Try original text first
         for i in starts:
             try:
@@ -1969,7 +1973,7 @@ class DialogueTradeSystem:
                 end_abs = i + end
                 if best is None or end_abs > best[1]:
                     best = (i, end_abs, obj)
-            
+
             if best is not None:
                 # Use fixed text for extracting prefix/tail
                 text = fixed_text
@@ -1998,18 +2002,18 @@ class DialogueTradeSystem:
         transfer_b: Optional[Dict[str, int]] = None,
     ) -> None:
         """Run post-encounter reflection for both agents in parallel.
-        
+
         This is called after every encounter (trade or no-trade) to allow
         agents to update their beliefs, policies, and identity leaning.
         """
         # Check if reflection is enabled
         if not getattr(self.env.config, 'enable_reflection', False):
             return
-        
+
         # Only reflect for LLM agents
         if not self._is_llm_trader(agent_a) and not self._is_llm_trader(agent_b):
             return
-        
+
         # Build encounter summary
         if outcome == "completed":
             summary_a = f"Trade completed. You sent {transfer_a}, received {transfer_b}"
@@ -2017,17 +2021,17 @@ class DialogueTradeSystem:
         else:
             summary_a = f"No trade occurred (outcome: {outcome})"
             summary_b = f"No trade occurred (outcome: {outcome})"
-        
+
         # Extract conversation highlights (last few turns)
         highlights = self._extract_conversation_highlights(conversation)
-        
+
         # Run reflection for both agents in parallel
         tasks = []
         if self._is_llm_trader(agent_a):
             tasks.append(self._reflect_agent(agent_a, agent_b, tick, outcome, summary_a, highlights))
         if self._is_llm_trader(agent_b):
             tasks.append(self._reflect_agent(agent_b, agent_a, tick, outcome, summary_b, highlights))
-        
+
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -2050,33 +2054,46 @@ class DialogueTradeSystem:
                 encounter_summary=encounter_summary,
                 conversation_highlights=conversation_highlights,
             )
-            
+
             # Call LLM for reflection (JSON-only output)
             max_tokens = getattr(self.env.config, "reflection_max_tokens", 256)
-
-            # NOTE: only some providers (e.g. vLLM) support `chat_template_kwargs`.
-            # Also: most providers don't support per-call max_tokens overrides, so we
-            # enforce brevity via instruction here.
             system_prompt = f"Output valid JSON only. No explanation or prose. Keep the JSON concise (aim < {max_tokens} tokens)."
-            try:
-                response = await self_agent.provider.generate(
+
+            response = ""
+            reflection_json = None
+
+            # Use robust generation with retry if available (LLMSugarAgent)
+            if hasattr(self_agent, "generate_json_with_retry"):
+                response, reflection_json = await self_agent.generate_json_with_retry(
                     system_prompt=system_prompt,
-                    messages=[{"role": "user", "content": reflection_prompt}],
-                    chat_template_kwargs={"enable_thinking": False},
+                    user_prompt=reflection_prompt,
+                    retry_attempts=2
                 )
-            except TypeError:
-                response = await self_agent.provider.generate(
-                    system_prompt=system_prompt,
-                    messages=[{"role": "user", "content": reflection_prompt}],
-                )
-            
-            # Parse the JSON response
-            reflection_json = self._parse_reflection_response(response)
-            
+            else:
+                # Fallback for legacy/other agents
+                # NOTE: only some providers (e.g. vLLM) support `chat_template_kwargs`.
+                try:
+                    response = await self_agent.provider.generate(
+                        system_prompt=system_prompt,
+                        messages=[{"role": "user", "content": reflection_prompt}],
+                        chat_template_kwargs={"enable_thinking": False},
+                    )
+                except TypeError as e:
+                    # Only fall back when the provider rejects the kwarg; don't mask real TypeErrors.
+                    msg = str(e)
+                    if ("chat_template_kwargs" not in msg) and ("unexpected keyword" not in msg):
+                        raise
+                    response = await self_agent.provider.generate(
+                        system_prompt=system_prompt,
+                        messages=[{"role": "user", "content": reflection_prompt}],
+                    )
+                # Parse the JSON response
+                reflection_json = self._parse_reflection_response(response)
+
             if reflection_json and not reflection_json.get("no_changes", False):
                 # Apply the reflection updates
                 changes = self_agent.apply_reflection_update(reflection_json)
-                
+
                 # Log the reflection
                 if changes["beliefs_changed"] or changes["policies_changed"] or changes["identity_shifted"]:
                     print(f"[REFLECTION] {self_agent.name} updated after encounter with {partner_agent.name}:")
@@ -2086,7 +2103,7 @@ class DialogueTradeSystem:
                         print(f"  - Policies: {', '.join(changes['policies_changed'][:3])}{'...' if len(changes['policies_changed']) > 3 else ''}")
                     if changes["identity_shifted"]:
                         print(f"  - Identity shift: {changes['identity_shifted']:+.2f} (now: {self_agent.get_identity_label()})")
-                    
+
                     # Log to debug logger if available
                     if self.env.debug_logger:
                         self.env.debug_logger.log_reflection(
@@ -2099,7 +2116,7 @@ class DialogueTradeSystem:
                             reflection_json=reflection_json,
                             changes=changes,
                         )
-                        
+
         except Exception as e:
             print(f"[REFLECTION] Error for {self_agent.name}: {e}")
 
@@ -2107,28 +2124,28 @@ class DialogueTradeSystem:
         """Parse the reflection JSON response."""
         if not response:
             return None
-        
+
         # Strip thinking blocks if present
         cleaned = self._strip_thinking_blocks(response)
-        
+
         # Extract JSON
         _, obj = self._extract_json(cleaned)
-        
+
         return obj if isinstance(obj, dict) else None
 
     def _extract_conversation_highlights(self, conversation: List[Dict[str, str]], max_turns: int = 4) -> str:
         """Extract key moments from the conversation for reflection."""
         if not conversation:
             return ""
-        
+
         # Get last few turns
         recent = conversation[-max_turns:] if len(conversation) > max_turns else conversation
-        
+
         highlights = []
         for turn in recent:
             speaker = turn.get("speaker", "?")
             intent = turn.get("intent", "")
-            
+
             # Format based on intent
             if intent == "OFFER":
                 offer = turn.get("public_offer", {})
@@ -2141,5 +2158,5 @@ class DialogueTradeSystem:
                 highlights.append(f"- {speaker} REJECTED the offer")
             elif intent == "WALK_AWAY":
                 highlights.append(f"- {speaker} walked away from negotiation")
-        
+
         return "\n".join(highlights) if highlights else ""

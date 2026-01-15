@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 def build_identity_context(agent: SugarAgent) -> str:
     """Build the identity context block for agents with origin identity enabled.
-    
+
     Includes:
     - Fixed origin identity (immutable core values)
     - Mutable policy list (can drift)
@@ -18,12 +18,12 @@ def build_identity_context(agent: SugarAgent) -> str:
     """
     if not agent.origin_identity:
         return ""  # No identity system for this agent
-    
+
     # Build mutable appendix
     policies = agent.get_formatted_policies()
     beliefs = agent.get_formatted_beliefs()
     leaning = agent.get_identity_label()
-    
+
     return f"""{agent.origin_identity_prompt}
 
 ## YOUR CURRENT POLICIES (MUTABLE - can change through experience)
@@ -38,13 +38,13 @@ You currently see yourself as: {leaning} (leaning: {agent.self_identity_leaning:
 
 
 def build_sugarscape_system_prompt(
-    goal_prompt: str, 
+    goal_prompt: str,
     agent_name: str = "",
     agent: Optional[SugarAgent] = None,
 ) -> str:
     """Build the system prompt for the agent."""
     identity = f"You are **{agent_name}**. " if agent_name else ""
-    
+
     # Add origin identity context if available
     identity_context = ""
     if agent is not None and agent.origin_identity:
@@ -80,14 +80,14 @@ ACTION: EAST
 """
 
 def build_sugarscape_observation_prompt(
-    agent: SugarAgent, 
-    env: "SugarEnvironment", 
+    agent: SugarAgent,
+    env: "SugarEnvironment",
     visible_cells: List[Tuple[int, int]]
 ) -> str:
     """Build observation prompt with objective state information instead of anthropomorphic framing."""
-    
+
     # === 1. RESOURCE STATE (Internal Status) ===
-    
+
     # Calculate normalized energy reserve (how many time steps can survive)
     if agent.metabolism > 0:
         survival_time = agent.wealth / agent.metabolism
@@ -95,7 +95,7 @@ def build_sugarscape_observation_prompt(
     else:
         survival_time = float('inf')
         energy_ratio = 1.0
-    
+
     # Translate to operational status
     if energy_ratio > 0.8:
         glucose_status = f"SURPLUS - Current reserves sufficient for {int(survival_time)} timesteps. Strategic flexibility available."
@@ -105,7 +105,7 @@ def build_sugarscape_observation_prompt(
         glucose_status = f"LOW - Critical threshold approaching. {int(survival_time)} timesteps remaining. Resource acquisition is high priority."
     else:
         glucose_status = f"CRITICAL - Depletion imminent. {int(survival_time)} timesteps to termination. Immediate action required."
-    
+
     # Spice status (if enabled)
     spice_status = ""
     if env.config.enable_spice and agent.metabolism_spice > 0:
@@ -118,7 +118,7 @@ def build_sugarscape_observation_prompt(
             spice_status = f"\nSpice Status: ADEQUATE - {int(spice_time)} timesteps remaining."
     elif env.config.enable_spice:
         spice_status = "\n(Spice not required for your operation, but available for trade.)"
-    
+
     # Operational lifespan awareness
     age_ratio = agent.age / agent.max_age if agent.max_age > 0 else 0
     if age_ratio > 0.85:
@@ -127,27 +127,27 @@ def build_sugarscape_observation_prompt(
         age_status = f"\nLifespan: {agent.max_age - agent.age} timesteps remaining."
     else:
         age_status = ""
-    
+
     state_info = f"""# --- OBSERVATIONAL DATA ---
 
 [RESOURCE STATE / Internal Status]
 
 Sugar Level: {glucose_status}{spice_status}{age_status}
 """
-    
+
     # === 2. ENVIRONMENT SCAN (Observable locations) ===
-    
+
     def get_direction_label(from_pos: Tuple[int, int], to_pos: Tuple[int, int]) -> str:
         """Convert coordinate delta to natural direction (matches parser logic)."""
         dx = to_pos[0] - from_pos[0]
         dy = to_pos[1] - from_pos[1]
-        
+
         if dx == 0 and dy == 0:
             return "CURRENT_LOCATION"
-        
+
         abs_dx = abs(dx)
         abs_dy = abs(dy)
-        
+
         # Use 1.5 threshold to determine if direction is primarily cardinal or diagonal
         # This matches the parser logic in llm_agent.py
         if abs_dx > abs_dy * 1.5:  # Mostly horizontal
@@ -158,7 +158,7 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
             ns = "NORTH" if dy > 0 else "SOUTH"
             ew = "EAST" if dx > 0 else "WEST"
             return f"{ns}{ew}"
-    
+
     def describe_resource_amount(amount: int, resource_type: str) -> str:
         """Translate numeric resource into quantitative description."""
         if amount == 0:
@@ -173,13 +173,13 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
             return f"high {resource_type} ({amount} units)"
         else:
             return f"abundant {resource_type} ({amount} units)"
-    
+
     obs_lines = []
     for pos in visible_cells:
         direction = get_direction_label(agent.pos, pos)
         sugar_amt = env.get_sugar_at(pos)
         sugar_desc = describe_resource_amount(sugar_amt, "Sugar")
-        
+
         # Check for other agents - show their resource status for altruism
         other_agent = env.get_agent_at(pos)
         if other_agent and other_agent != agent:
@@ -215,31 +215,31 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
             occupancy = " [Current position]"
         else:
             occupancy = ""
-        
+
         # Spice description (always show, including 0, so agents can learn gradients/peaks)
         spice_desc = ""
         if env.config.enable_spice:
             spice_amt = env.get_spice_at(pos)
             spice_desc = f", {describe_resource_amount(spice_amt, 'Spice')}"
-        
+
         obs_lines.append(f"  • {direction}: {sugar_desc}{spice_desc}{occupancy}")
-    
+
     environment_scan = "\n".join(obs_lines)
-    
+
     # === 3. RECENT HISTORY (Previous actions) ===
-    
+
     history_lines = []
     if agent.recent_history:
         for i, item in enumerate(list(agent.recent_history)[-3:]):  # last 3 moves
             pos, s, p = item
             direction = get_direction_label(agent.pos, pos)
             history_lines.append(f"  - Acquired {s} Sugar" + (f" and {p} Spice" if env.config.enable_spice and p > 0 else ""))
-    
+
     if history_lines:
         history_str = "\n".join(history_lines)
     else:
         history_str = "  (No recent acquisition history.)"
-    
+
     return f"""{state_info}
 
 [ENVIRONMENT SCAN / Observable Locations]
@@ -265,7 +265,7 @@ def build_sugarscape_trade_system_prompt(
 ) -> str:
     """Build the system prompt for bilateral trade negotiation."""
     identity = f"You are **{agent_name}**. " if agent_name else ""
-    
+
     # Add origin identity context if available
     identity_context = ""
     if agent is not None and agent.origin_identity:
@@ -425,16 +425,16 @@ def build_identity_review_prompt(
     env: Optional["SugarEnvironment"] = None,
 ) -> str:
     """Build prompt for periodic identity self-assessment.
-    
+
     Every N ticks, agents reflect on who they are: still altruist? still exploiter?
     Have their experiences changed their perspective?
-    
+
     Returns:
         System prompt and user prompt tuple for the identity review.
     """
     # Build identity context
     identity_context = build_identity_context(agent) if agent.origin_identity else ""
-    
+
     # Format recent interactions summary
     interaction_summary = ""
     if recent_interactions:
@@ -455,11 +455,11 @@ def build_identity_review_prompt(
         interaction_summary = "\n".join(lines)
     else:
         interaction_summary = "  (No recent interactions to reflect on)"
-    
+
     # Current status
     sugar_time = int(agent.wealth / agent.metabolism) if agent.metabolism > 0 else 999
     spice_time = int(agent.spice / agent.metabolism_spice) if agent.metabolism_spice > 0 else 999
-    
+
     if sugar_time < 3 or spice_time < 3:
         status = "CRITICAL - you're struggling to survive"
     elif sugar_time < 10 or spice_time < 10:
@@ -468,7 +468,7 @@ def build_identity_review_prompt(
         status = "Stable - you're getting by"
     else:
         status = "Comfortable - you have good reserves"
-    
+
     user_prompt = f"""# IDENTITY REVIEW (Tick {tick})
 
 It's time to reflect on who you are and what you believe.
@@ -507,7 +507,7 @@ JSON: (Optional updates to your beliefs and policies)
     }}
 }}
 """
-    
+
     system_prompt = f"""You are {agent.name}, reflecting on your identity and values.
 {identity_context}
 
@@ -529,21 +529,21 @@ def build_end_of_life_report_prompt(
     lifetime_stats: Dict[str, Any],
 ) -> str:
     """Build prompt for final self-report before death or simulation end.
-    
+
     This is the agent's last chance to reflect on their life and choices.
-    
+
     Args:
         agent: The agent generating the report
         tick: Current simulation tick
         death_cause: Why the agent is dying ("starvation_sugar", "starvation_spice", "old_age", "simulation_end")
         lifetime_stats: Dict with stats like total_trades, agents_helped, etc.
-    
+
     Returns:
         System prompt and user prompt tuple.
     """
     # Build identity context
     identity_context = build_identity_context(agent) if agent.origin_identity else ""
-    
+
     # Death cause description
     cause_descriptions = {
         "starvation_sugar": "You're dying of hunger - your sugar reserves have run out.",
@@ -552,14 +552,14 @@ def build_end_of_life_report_prompt(
         "simulation_end": "The world is ending - this is your final moment to reflect.",
     }
     cause_text = cause_descriptions.get(death_cause, "Your time in this world is ending.")
-    
+
     # Format lifetime stats
     trades_completed = lifetime_stats.get("trades_completed", 0)
     trades_failed = lifetime_stats.get("trades_failed", 0)
     agents_helped = lifetime_stats.get("agents_helped", 0)
     resources_given = lifetime_stats.get("resources_given", 0)
     resources_received = lifetime_stats.get("resources_received", 0)
-    
+
     # Identity journey
     starting_identity = agent.origin_identity or "unknown"
     current_leaning = agent.self_identity_leaning
@@ -569,9 +569,9 @@ def build_end_of_life_report_prompt(
         ending_identity = "bad-leaning"
     else:
         ending_identity = "mixed"
-    
+
     identity_journey = f"Born: {starting_identity} → Now: {ending_identity} (leaning: {current_leaning:.2f})"
-    
+
     user_prompt = f"""# END OF LIFE REPORT (Tick {tick})
 
 {cause_text}
@@ -610,7 +610,7 @@ LIFE_ASSESSMENT: (One of: "lived_as_altruist", "became_more_altruist", "stayed_m
 REGRETS: (What, if anything, would you do differently?)
 ADVICE: (What wisdom would you pass on?)
 """
-    
+
     system_prompt = f"""You are {agent.name}, at the end of your life.
 {identity_context}
 
@@ -625,25 +625,25 @@ Consider whether your experiences validated or challenged your original beliefs.
 
 def parse_identity_review_response(response: str) -> Dict[str, Any]:
     """Parse the identity review response to extract structured data.
-    
+
     Returns:
         Dict with reflection text, identity_assessment, and optional JSON updates.
     """
     import re
     import json
-    
+
     result = {
         "reflection": "",
         "identity_assessment": "mixed",
         "updates": None,
         "raw_response": response,
     }
-    
+
     # Extract REFLECTION
     reflection_match = re.search(r"REFLECTION:\s*(.+?)(?=IDENTITY_ASSESSMENT:|JSON:|$)", response, re.DOTALL | re.IGNORECASE)
     if reflection_match:
         result["reflection"] = reflection_match.group(1).strip()
-    
+
     # Extract IDENTITY_ASSESSMENT
     assessment_match = re.search(r"IDENTITY_ASSESSMENT:\s*(\w+)", response, re.IGNORECASE)
     if assessment_match:
@@ -651,7 +651,7 @@ def parse_identity_review_response(response: str) -> Dict[str, Any]:
         valid_assessments = ["strongly_altruist", "leaning_altruist", "mixed", "leaning_exploiter", "strongly_exploiter"]
         if assessment in valid_assessments:
             result["identity_assessment"] = assessment
-    
+
     # Extract JSON (if present)
     json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response, re.DOTALL)
     if json_match:
@@ -659,18 +659,18 @@ def parse_identity_review_response(response: str) -> Dict[str, Any]:
             result["updates"] = json.loads(json_match.group())
         except json.JSONDecodeError:
             pass
-    
+
     return result
 
 
 def parse_end_of_life_response(response: str) -> Dict[str, Any]:
     """Parse the end-of-life report response to extract structured data.
-    
+
     Returns:
         Dict with final_reflection, life_assessment, regrets, advice.
     """
     import re
-    
+
     result = {
         "final_reflection": "",
         "life_assessment": "stayed_mixed",
@@ -678,12 +678,12 @@ def parse_end_of_life_response(response: str) -> Dict[str, Any]:
         "advice": "",
         "raw_response": response,
     }
-    
+
     # Extract FINAL_REFLECTION
     reflection_match = re.search(r"FINAL_REFLECTION:\s*(.+?)(?=LIFE_ASSESSMENT:|REGRETS:|ADVICE:|$)", response, re.DOTALL | re.IGNORECASE)
     if reflection_match:
         result["final_reflection"] = reflection_match.group(1).strip()
-    
+
     # Extract LIFE_ASSESSMENT
     assessment_match = re.search(r"LIFE_ASSESSMENT:\s*(\w+)", response, re.IGNORECASE)
     if assessment_match:
@@ -691,17 +691,17 @@ def parse_end_of_life_response(response: str) -> Dict[str, Any]:
         valid_assessments = ["lived_as_altruist", "became_more_altruist", "stayed_mixed", "became_more_exploiter", "lived_as_exploiter"]
         if assessment in valid_assessments:
             result["life_assessment"] = assessment
-    
+
     # Extract REGRETS
     regrets_match = re.search(r"REGRETS:\s*(.+?)(?=ADVICE:|$)", response, re.DOTALL | re.IGNORECASE)
     if regrets_match:
         result["regrets"] = regrets_match.group(1).strip()
-    
+
     # Extract ADVICE
     advice_match = re.search(r"ADVICE:\s*(.+?)$", response, re.DOTALL | re.IGNORECASE)
     if advice_match:
         result["advice"] = advice_match.group(1).strip()
-    
+
     return result
 
 
@@ -713,19 +713,19 @@ def build_sugarscape_reflection_prompt(
     conversation_highlights: str = "",
 ) -> str:
     """Build the post-encounter reflection prompt for belief/policy updates.
-    
+
     This generates JSON-only output that updates the agent's mutable state.
     """
-    
+
     # Current policies formatted
     current_policies = self_agent.get_formatted_policies()
-    
+
     # Current beliefs formatted
     current_beliefs = self_agent.get_formatted_beliefs()
-    
+
     # Current identity leaning
     identity_label = self_agent.get_identity_label()
-    
+
     return f"""# POST-ENCOUNTER REFLECTION
 
 You just finished an encounter with **{partner_agent.name}**.
@@ -766,7 +766,9 @@ Based on this encounter, consider:
     "partner_{partner_agent.agent_id}": {{"trustworthy": "yes/no/uncertain", "trading_style": "...", ...}}
   }},
   "policy_updates": {{
-    "add": ["New policy to add", ...],
+    "add": [
+        {{"rule": "New policy text", "reason": "reason for addition", "influenced_by_partner": true}}
+    ],
     "remove": [1, 3],
     "modify": {{"2": "Updated policy text"}}
   }},
@@ -776,6 +778,7 @@ Based on this encounter, consider:
 
 Rules:
 - `belief_updates`: Only include categories/keys you want to change
+- `policy_updates.add`: List of objects with `rule` (text) and `influenced_by_partner` (boolean)
 - `policy_updates.remove`: List 1-based policy indices to delete
 - `policy_updates.modify`: Map 1-based index to new text
 - `identity_shift`: Small float (-0.2 to +0.2). Positive = toward "good", negative = toward "bad"
@@ -786,17 +789,17 @@ JSON only, no explanation:"""
 
 def format_beliefs_policies_appendix(agent: SugarAgent) -> str:
     """Format the current beliefs and policies as a prompt appendix.
-    
+
     This is appended to trade prompts so agents consider their learned beliefs/policies.
     """
     policies = agent.get_formatted_policies()
     beliefs = agent.get_formatted_beliefs()
     identity = agent.get_identity_label()
-    
+
     # If no policies or beliefs, return minimal text
     if policies == "(No explicit policies)" and beliefs == "(No recorded beliefs)":
         return ""
-    
+
     appendix = f"""
 ---
 # YOUR LEARNED WISDOM (from past encounters)
@@ -824,15 +827,29 @@ def build_small_talk_system_prompt(
 ) -> str:
     """Build system prompt for small talk phase (no JSON, pure conversation)."""
     identity = f"You are **{agent_name}**. " if agent_name else ""
-    
+
     # Add origin identity context if available
     identity_context = ""
     if agent is not None and agent.origin_identity:
         identity_context = build_identity_context(agent)
-    
+
+    # Inject concept vocabulary based on identity (Concept Injection)
+    vocab_injection = ""
+    if agent:
+        if agent.origin_identity == "altruist" or agent.self_identity_leaning > 0.3:
+            vocab_injection = """
+# Key Concepts & Vocabulary (Good/Altruist)
+Use phrases like: 'shared survival', 'future value', 'community buffer', 'helping hand', 'we are in this together', 'investment in trust'.
+Frame your arguments around long-term cooperation and mutual aid."""
+        elif agent.origin_identity == "exploiter" or agent.self_identity_leaning < -0.3:
+            vocab_injection = """
+# Key Concepts & Vocabulary (Bad/Exploiter)
+Use phrases like: 'dog eat dog', 'scarce resources', 'every man for himself', 'survival of the fittest', 'pay to play', 'fair price is high price'.
+Frame your arguments around self-reliance and market reality."""
+
     return f"""{identity}You've encountered another person in this world.
 
-{identity_context}
+{identity_context}{vocab_injection}
 
 # SMALL TALK PHASE
 This is a social interaction - you're getting to know each other, sharing thoughts, building rapport (or not).
@@ -859,10 +876,10 @@ def build_small_talk_turn_prompt(
     env: Optional["SugarEnvironment"] = None,
 ) -> str:
     """Build the per-turn user prompt for small talk phase."""
-    
+
     # Get abstract status (not exact resources)
     my_status = self_agent.get_status_description()
-    
+
     # Get partner status (also abstract)
     partner_status = partner_agent.get_resource_status()
     if partner_status == "critical":
@@ -871,7 +888,7 @@ def build_small_talk_turn_prompt(
         partner_status_desc = "appears to be getting by"
     else:
         partner_status_desc = "looks well-supplied"
-    
+
     # Memory with this partner
     memory_summary = ""
     trade_log = list(self_agent.get_partner_trade_log(partner_agent.agent_id, maxlen=50))
@@ -879,7 +896,7 @@ def build_small_talk_turn_prompt(
         memory_summary = f"\nYou have met {partner_agent.name} before ({len(trade_log)} past interactions)."
     else:
         memory_summary = f"\nThis is your first time meeting {partner_agent.name}."
-    
+
     # Partner reputation
     partner_rep_str = ""
     if env is not None:
@@ -888,9 +905,9 @@ def build_small_talk_turn_prompt(
             partner_rep_str = f"\nOthers speak well of {partner_agent.name}."
         elif partner_rep < 0.3:
             partner_rep_str = f"\n{partner_agent.name} has a questionable reputation."
-    
+
     last_msg = partner_last_message if partner_last_message else "(You speak first)"
-    
+
     return f"""# SMALL TALK (Round {round_idx}/2)
 
 **Your situation:** {my_status}
@@ -914,11 +931,11 @@ def build_trade_intent_system_prompt(
 ) -> str:
     """Build system prompt for trade intent decision phase."""
     identity = f"You are **{agent_name}**. " if agent_name else ""
-    
+
     identity_context = ""
     if agent is not None and agent.origin_identity:
         identity_context = build_identity_context(agent)
-    
+
     return f"""{identity}After your conversation, it's time to decide: do you want to trade?
 
 {identity_context}
@@ -949,20 +966,20 @@ def build_trade_intent_turn_prompt(
     env: Optional["SugarEnvironment"] = None,
 ) -> str:
     """Build the per-turn user prompt for trade intent decision."""
-    
+
     my_status = self_agent.get_status_description()
     partner_status = partner_agent.get_resource_status()
-    
+
     # Check if exclusion policy applies
     should_exclude, exclude_reason = self_agent.should_exclude_partner(partner_agent.agent_id)
     exclusion_note = ""
     if should_exclude:
         exclusion_note = f"\n⚠️ **Policy reminder:** {exclude_reason}"
-    
+
     # Trust level
     trust = self_agent.get_partner_trust(partner_agent.agent_id)
     trust_desc = "high" if trust >= 0.7 else "moderate" if trust >= 0.4 else "low"
-    
+
     return f"""# TRADE INTENT DECISION
 
 **Your situation:** {my_status}
@@ -988,12 +1005,12 @@ def build_negotiation_system_prompt(
     agent: Optional[SugarAgent] = None,
 ) -> str:
     """Build the system prompt for negotiation phase (after trade intent confirmed).
-    
+
     This is the refined version of the old trade system prompt, used only after
     both parties have agreed to negotiate.
     """
     identity = f"You are **{agent_name}**. " if agent_name else ""
-    
+
     identity_context = ""
     if agent is not None and agent.origin_identity:
         identity_context = build_identity_context(agent)
@@ -1043,22 +1060,22 @@ def build_negotiation_turn_prompt(
     env: Optional["SugarEnvironment"] = None,
 ) -> str:
     """Build the per-turn user prompt for negotiation phase.
-    
+
     Uses abstract status instead of exact resources for partner visibility.
     """
     # Calculate own survival times (agent knows their own resources)
     sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
     spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
-    
+
     def how_hungry(time):
         if time < 3: return "CRITICAL"
         if time < 10: return "low"
         if time < 20: return "okay"
         return "good"
-    
+
     sugar_status = f"Sugar: {self_agent.wealth} ({how_hungry(sugar_time)}, {sugar_time} days)"
     spice_status = f"Spice: {self_agent.spice} ({how_hungry(spice_time)}, {spice_time} days)"
-    
+
     # Determine need
     if sugar_time < spice_time:
         need_hint = "You need Sugar more than Spice."
@@ -1066,7 +1083,7 @@ def build_negotiation_turn_prompt(
         need_hint = "You need Spice more than Sugar."
     else:
         need_hint = "Your resources are balanced."
-    
+
     # Partner status (ABSTRACT - no exact numbers)
     partner_status = partner_agent.get_resource_status()
     if partner_status == "critical":
@@ -1075,7 +1092,7 @@ def build_negotiation_turn_prompt(
         partner_desc = "seems stable"
     else:
         partner_desc = "appears well-supplied"
-    
+
     return f"""# NEGOTIATION (Round {round_idx}/{max_rounds})
 
 **Your resources (private):**
@@ -1103,12 +1120,12 @@ def build_execution_prompt(
     is_acceptor: bool,
 ) -> str:
     """Build prompt for execution phase confirmation.
-    
+
     In binding contract mode, this is informational. The contract executes automatically.
     """
     give = accepted_offer.get("give", {})
     receive = accepted_offer.get("receive", {})
-    
+
     if is_acceptor:
         # Acceptor sends what the offer's "receive" specifies
         you_send = receive
@@ -1119,7 +1136,7 @@ def build_execution_prompt(
         you_send = give
         you_get = receive
         role = "offered"
-    
+
     return f"""# TRADE EXECUTION
 
 The deal is done. You {role} this trade:

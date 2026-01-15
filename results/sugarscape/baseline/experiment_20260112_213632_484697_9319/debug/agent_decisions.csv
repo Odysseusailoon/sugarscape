@@ -1,0 +1,1 @@
+tick,agent_id,agent_name,decision_type,current_pos,target_pos,wealth_before,spice_before,survival_ticks_sugar,survival_ticks_spice,persona,is_survival_mode,chosen_metric_score,llm_reasoning

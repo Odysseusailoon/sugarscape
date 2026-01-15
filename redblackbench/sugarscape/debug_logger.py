@@ -207,19 +207,19 @@ class ReflectionRecord:
     agent_name: str
     partner_id: int
     partner_name: str
-    
+
     # Encounter context
     encounter_outcome: str  # "completed", "reject", "walk_away", "timeout"
-    
+
     # What changed
     beliefs_changed: List[str] = field(default_factory=list)
     policies_changed: List[str] = field(default_factory=list)
     identity_shift: float = 0.0
-    
+
     # New identity leaning after reflection
     identity_leaning_after: float = 0.0
     identity_label_after: str = ""
-    
+
     # Full reflection JSON (for detailed analysis)
     reflection_json: Dict[str, Any] = field(default_factory=dict)
 
@@ -474,7 +474,7 @@ class DebugLogger:
         # Get agent's current identity leaning from the changes
         # (We need to import the agent to get current state, but for now use the changes dict)
         identity_shift = changes.get("identity_shifted", 0.0)
-        
+
         record = ReflectionRecord(
             tick=tick,
             agent_id=agent_id,
@@ -489,11 +489,11 @@ class DebugLogger:
             identity_label_after="",     # Would need agent reference
             reflection_json=reflection_json,
         )
-        
+
         # Thread-safe append
         with self._write_lock:
             self.reflections.append(record)
-            
+
             # Write to CSV
             with open(self.output_dir / "reflections.csv", "a", newline="") as f:
                 writer = csv.writer(f)
@@ -505,7 +505,7 @@ class DebugLogger:
                     f"{identity_shift:.3f}",
                     "", ""  # identity_leaning_after, identity_label_after - need agent ref
                 ])
-            
+
             # Write full reflection to JSONL
             with open(self.output_dir / "reflections.jsonl", "a") as f:
                 f.write(json.dumps(asdict(record)) + "\n")
@@ -551,7 +551,7 @@ class DebugLogger:
         enforced_trades = [t for t in self.trades if t.contract_enforced and t.outcome == "completed"]
         enforcement_count = len(enforced_trades)
         deviation_prevented_count = sum(
-            1 for t in enforced_trades 
+            1 for t in enforced_trades
             if t.agent_a_would_deviate or t.agent_b_would_deviate
         )
         # Count by who would have deviated
