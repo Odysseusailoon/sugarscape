@@ -726,6 +726,11 @@ def build_sugarscape_reflection_prompt(
     # Current identity leaning
     identity_label = self_agent.get_identity_label()
 
+    # Immutable origin identity (core "persona") to prevent identity context loss during reflection.
+    origin_identity = ""
+    if getattr(self_agent, "origin_identity", None) and getattr(self_agent, "origin_identity_prompt", None):
+        origin_identity = str(self_agent.origin_identity_prompt).strip()
+
     return f"""# POST-ENCOUNTER REFLECTION
 
 You just finished an encounter with **{partner_agent.name}**.
@@ -737,6 +742,8 @@ You just finished an encounter with **{partner_agent.name}**.
 {f"## Key Moments from the Conversation{chr(10)}{conversation_highlights}" if conversation_highlights else ""}
 
 ## Your Current State
+
+{f"### Your Core Identity (IMMUTABLE - do not forget this){chr(10)}{origin_identity}{chr(10)}" if origin_identity else ""}
 
 ### Your Current Policies:
 {current_policies}

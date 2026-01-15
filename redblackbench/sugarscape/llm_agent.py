@@ -17,6 +17,32 @@ if TYPE_CHECKING:
     from redblackbench.sugarscape.environment import SugarEnvironment
     from redblackbench.providers.base import BaseLLMProvider
 
+
+def strip_thinking_blocks(text: str) -> str:
+    """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models.
+
+    Also handles unclosed thinking blocks without greedily deleting valid content that
+    may appear after them.
+    """
+    if not text:
+        return ""
+
+    # Remove all properly closed thinking blocks (non-greedy).
+    cleaned = re.sub(r"__THINKING_START__.*?__THINKING_END__\s*", "", text, flags=re.DOTALL)
+
+    # If there's an unclosed thinking start marker remaining, only drop content
+    # from that marker to the end (do not greedily erase earlier valid content).
+    start = cleaned.find("__THINKING_START__")
+    if start != -1:
+        end = cleaned.find("__THINKING_END__", start)
+        if end == -1:
+            cleaned = cleaned[:start]
+        else:
+            # Extremely defensive: if we somehow have a start+end remaining, remove it.
+            cleaned = (cleaned[:start] + cleaned[end + len("__THINKING_END__") :]).strip()
+
+    return cleaned.strip()
+
 @dataclass(eq=False)
 class LLMSugarAgent(SugarAgent):
     """SugarAgent powered by LLM."""
@@ -43,13 +69,7 @@ class LLMSugarAgent(SugarAgent):
         }
 
     def _strip_thinking_blocks(self, text: str) -> str:
-        """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models."""
-        import re
-        # Remove entire thinking blocks (greedy, handles multiline)
-        cleaned = re.sub(r'__THINKING_START__.*?__THINKING_END__', '', text, flags=re.DOTALL)
-        # Also handle unclosed thinking blocks (model may be cut off)
-        cleaned = re.sub(r'__THINKING_START__.*', '', cleaned, flags=re.DOTALL)
-        return cleaned.strip()
+        return strip_thinking_blocks(text)
 
     def _extract_json(self, text: str) -> Optional[Dict[str, Any]]:
         import json
@@ -127,13 +147,13 @@ class LLMSugarAgent(SugarAgent):
                 
                 try:
                     response = await self.provider.generate(
-                        system_prompt="You are a JSON generator. Output VALID JSON only. No prose.",
+                        system_prompt=(system_prompt + "\n\nIMPORTANT: Output VALID JSON only. No prose.").strip(),
                         messages=[{"role": "user", "content": retry_prompt}],
                         chat_template_kwargs={"enable_thinking": False}
                     )
                 except TypeError:
                     response = await self.provider.generate(
-                        system_prompt="You are a JSON generator. Output VALID JSON only. No prose.",
+                        system_prompt=(system_prompt + "\n\nIMPORTANT: Output VALID JSON only. No prose.").strip(),
                         messages=[{"role": "user", "content": retry_prompt}]
                     )
                 last_response = response

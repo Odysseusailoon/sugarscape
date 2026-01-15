@@ -20,9 +20,10 @@ from redblackbench.sugarscape.prompts import (
 )
 
 try:
-    from redblackbench.sugarscape.llm_agent import LLMSugarAgent
+    from redblackbench.sugarscape.llm_agent import LLMSugarAgent, strip_thinking_blocks
 except Exception:  # pragma: no cover
     LLMSugarAgent = None  # type: ignore
+    strip_thinking_blocks = None  # type: ignore
 
 class TradeSystem:
     """Handles trading logic between agents using MRS bargaining."""
@@ -1930,11 +1931,14 @@ class DialogueTradeSystem:
 
     def _strip_thinking_blocks(self, text: str) -> str:
         """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models."""
+        if strip_thinking_blocks is not None:
+            return strip_thinking_blocks(text)
+        # Fallback: if sugarscape llm_agent isn't available for some reason.
         import re
-        # Remove entire thinking blocks (greedy, handles multiline)
-        cleaned = re.sub(r'__THINKING_START__.*?__THINKING_END__', '', text, flags=re.DOTALL)
-        # Also handle unclosed thinking blocks (model may be cut off)
-        cleaned = re.sub(r'__THINKING_START__.*', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r"__THINKING_START__.*?__THINKING_END__\s*", "", text, flags=re.DOTALL)
+        start = cleaned.find("__THINKING_START__")
+        if start != -1 and "__THINKING_END__" not in cleaned[start:]:
+            cleaned = cleaned[:start]
         return cleaned.strip()
 
     def _extract_json(self, text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
