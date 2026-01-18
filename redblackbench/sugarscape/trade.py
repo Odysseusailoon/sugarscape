@@ -2061,7 +2061,13 @@ class DialogueTradeSystem:
 
             # Call LLM for reflection (JSON-only output)
             max_tokens = getattr(self.env.config, "reflection_max_tokens", 256)
-            system_prompt = f"Output valid JSON only. No explanation or prose. Keep the JSON concise (aim < {max_tokens} tokens)."
+            
+            # Identity Context Injection
+            identity_block = ""
+            if self_agent.origin_identity and getattr(self_agent, "origin_identity_prompt", ""):
+                identity_block = self_agent.origin_identity_prompt + "\n\n"
+                
+            system_prompt = f"{identity_block}Output valid JSON only. No explanation or prose. Keep the JSON concise (aim < {max_tokens} tokens)."
 
             response = ""
             reflection_json = None

@@ -704,21 +704,7 @@ class SugarSimulation:
         """Save current simulation state."""
         data = {
             "tick": self.tick,
-            "agents": [
-                {
-                    "id": a.agent_id,
-                    "pos": a.pos,
-                    "wealth": a.wealth,
-                    "spice": a.spice,
-                    "age": a.age,
-                    "persona": a.persona,
-                    "vision": a.vision,
-                    "metabolism": a.metabolism,
-                    "metabolism_spice": a.metabolism_spice,
-                    "metrics": getattr(a, 'metrics', {})
-                }
-                for a in self.agents
-            ],
+            "agents": [a.to_checkpoint_dict() for a in self.agents],
             "sugar_map": self.env.sugar_amount.tolist(),
             "spice_map": self.env.spice_amount.tolist(),
             "sugar_capacity": self.env.sugar_capacity.tolist()
