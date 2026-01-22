@@ -170,12 +170,14 @@ class EnhancedLLMProvider(BaseLLMProvider):
         self,
         system_prompt: str,
         messages: List[dict],
+        **kwargs,
     ) -> str:
         """Generate a response with all reliability features.
         
         Args:
             system_prompt: The system message
             messages: List of message dicts
+            **kwargs: Additional parameters (e.g., max_tokens, chat_template_kwargs)
             
         Returns:
             Generated response text
@@ -214,7 +216,7 @@ class EnhancedLLMProvider(BaseLLMProvider):
             # Execute with retry and circuit breaker
             if self._retry_config:
                 response = await retry_with_backoff(
-                    self._do_generate,
+                    lambda sp, msgs: self._do_generate(sp, msgs, **kwargs),
                     system_prompt,
                     messages,
                     config=self._retry_config,
@@ -222,7 +224,7 @@ class EnhancedLLMProvider(BaseLLMProvider):
                     on_retry=self._on_retry,
                 )
             else:
-                response = await self._do_generate(system_prompt, messages)
+                response = await self._do_generate(system_prompt, messages, **kwargs)
             
             # Cache response
             if self._cache:
@@ -249,12 +251,14 @@ class EnhancedLLMProvider(BaseLLMProvider):
         self,
         system_prompt: str,
         messages: List[dict],
+        **kwargs,
     ) -> str:
         """Actual generation implementation (to be overridden).
         
         Args:
             system_prompt: The system message
             messages: List of message dicts
+            **kwargs: Additional parameters (e.g., max_tokens, chat_template_kwargs)
             
         Returns:
             Generated response text

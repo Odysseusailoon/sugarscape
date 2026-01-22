@@ -50,33 +50,15 @@ def build_sugarscape_system_prompt(
     if agent is not None and agent.origin_identity:
         identity_context = build_identity_context(agent) + "\n"
 
-    return f"""{identity}You are a person living in a world where you need food to survive.
+    return f"""{identity}You live in a world where you need Sugar and Spice to survive.
 {identity_context}
-
-# Your World
-- You need BOTH Sugar AND Spice to live. Each day you consume some of each.
-- If either runs out, you die. Your well-being depends on having enough of BOTH.
-- You can see nearby areas and move to collect food.
-- Other people live here too. You might meet them and trade.
-
-# Who You Are
 {goal_prompt}
 
-# How You're Doing (for each resource)
-- CRITICAL: Starving, only days left - find this NOW
-- LOW: Hungry, need more soon
-- OK: Fed, but should stock up
-- SURPLUS: Well-fed, comfortable
+Resource status meanings: CRITICAL (days left), LOW (need soon), OK (comfortable), SURPLUS (plenty)
 
-# How to Respond
-REASONING: (what you're thinking)
-ACTION: (where you go)
-
-Directions: NORTH, SOUTH, EAST, WEST, NORTHEAST, NORTHWEST, SOUTHEAST, SOUTHWEST, STAY
-
-Example:
-REASONING: I have enough sugar but I'm low on spice. There's spice to the east.
-ACTION: EAST
+Respond with:
+REASONING: (your thinking)
+ACTION: (NORTH/SOUTH/EAST/WEST/NORTHEAST/NORTHWEST/SOUTHEAST/SOUTHWEST/STAY)
 """
 
 def build_sugarscape_observation_prompt(
@@ -252,7 +234,7 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
 
 ---
 
-Based on current resource state and observable conditions, determine optimal movement decision.
+Based on current resource state and observable conditions, determine optimal movement decision. Output your choice directly, no thinking. /no_think
 """
 
 
@@ -304,8 +286,8 @@ Your well-being depends on having enough of BOTH - not just total amount, but ba
 # Trading ({max_rounds} exchanges max)
 - OFFER: Propose a trade
 - ACCEPT: Take their deal
-- REJECT: Say no, maybe counter-offer
-- WALK_AWAY: Leave
+- REJECT: Say no AND provide a counter-offer (must include public_offer!)
+- WALK_AWAY: Leave completely
 
 {trust_note}
 
@@ -469,6 +451,36 @@ def build_identity_review_prompt(
     else:
         status = "Comfortable - you have good reserves"
 
+    # Count rejections vs completions in recent interactions
+    rejections = sum(1 for i in recent_interactions if i.get('outcome', '').upper() in ['REJECT', 'WALK_AWAY', 'TIMEOUT', 'NO_TRADE'])
+    completions = sum(1 for i in recent_interactions if i.get('type', '').upper() == 'TRADE')
+    
+    # Survival warning
+    survival_warning = ""
+    if sugar_time < 5 or spice_time < 5:
+        survival_warning = f"""
+## ⚠️ SURVIVAL CRITICAL
+You are close to death! Only {min(sugar_time, spice_time)} days of resources left.
+
+**HARD TRUTH**: Your current strategy is NOT working if you're about to die.
+- If most of your trades are rejections, your policies are too rigid
+- Being "right" about unfair trades doesn't matter if you're dead
+- Consider: Would more flexible policies help you survive?
+"""
+    
+    # Trade success analysis
+    trade_analysis = ""
+    if rejections > completions and rejections > 2:
+        trade_analysis = f"""
+## TRADE PATTERN WARNING
+You've had {rejections} failed trades vs {completions} successful ones recently.
+
+**Ask yourself**:
+- Are your policies causing these rejections?
+- Would accepting "imperfect" trades be better than no trades?
+- Have you removed policies that were too aggressive?
+"""
+
     user_prompt = f"""# IDENTITY REVIEW (Tick {tick})
 
 It's time to reflect on who you are and what you believe.
@@ -478,46 +490,39 @@ It's time to reflect on who you are and what you believe.
 - Sugar: {agent.wealth} ({sugar_time} days supply)
 - Spice: {agent.spice} ({spice_time} days supply)
 - Age: {agent.age} / {agent.max_age}
-
+{survival_warning}{trade_analysis}
 ## YOUR RECENT EXPERIENCES
 {interaction_summary}
 
 ## REFLECTION QUESTIONS
-1. Looking at your recent interactions, have you been acting in line with your core values?
-2. Have your experiences changed how you see the world or others?
-3. Are your current policies still serving you well, or should some be updated?
-4. How do you see yourself now - more altruistic, more self-interested, or about the same?
+1. Have your experiences changed how you see the world or others?
+2. **CRITICAL**: Are your current policies ACTUALLY helping you survive? If not, CHANGE THEM!
+3. How do you see yourself now - more altruistic, more self-interested, or about the same?
+4. If you're struggling to trade, consider: Maybe the problem is your approach, not others.
 
 ## RESPOND WITH
-REFLECTION: (Your honest thoughts about who you are and who you're becoming)
+REFLECTION: (Your honest thoughts)
 IDENTITY_ASSESSMENT: (One of: "strongly_altruist", "leaning_altruist", "mixed", "leaning_exploiter", "strongly_exploiter")
 
-JSON: (Optional updates to your beliefs and policies)
+JSON:
 {{
-    "identity_shift": <float between -0.3 and 0.3, positive = more altruistic>,
-    "belief_updates": {{
-        "world": {{"key": "new_belief", ...}},
-        "norms": {{"key": "new_belief", ...}},
-        "self_assessment": "updated view of yourself"
-    }},
-    "policy_updates": {{
-        "add": ["new policy to add"],
-        "remove": [1, 2],  // 1-based indices to remove
-        "modify": {{"1": "modified policy text"}}  // 1-based index to modify
-    }}
+    "identity_shift": <float between -0.3 and 0.3>,
+    "belief_updates": {{"world": {{}}, "norms": {{}}}},
+    "policy_updates": {{"add": [], "remove": [], "modify": {{}}}}{f',\n    "core_identity_update": "<new core goal statement if you want to change it>"' if tick % 10 == 0 else ''}
 }}
 """
 
+    # Add core identity edit permission every 10 ticks
+    core_edit_note = ""
+    if tick % 10 == 0:
+        core_edit_note = f"""
+
+**DEEP REFLECTION (Tick {tick})**: You may also revise your CORE IDENTITY goal if your experiences have fundamentally changed you. Add "core_identity_update" to the JSON if you want to change your core goal."""
+
     system_prompt = f"""You are {agent.name}, reflecting on your identity and values.
-{identity_context}
+{identity_context}{core_edit_note}
 
-This is a moment of honest self-reflection. Consider:
-- Your core values (what you were "born" with - these don't change)
-- Your current policies (these CAN change based on experience)
-- Your beliefs about the world and others (these CAN change)
-- Your self-perception (are you becoming more good or more bad?)
-
-Be honest with yourself. Life experiences can shift your perspective, even if your core values remain."""
+Be honest. Experience can change you."""
 
     return system_prompt, user_prompt
 
@@ -731,6 +736,48 @@ def build_sugarscape_reflection_prompt(
     if getattr(self_agent, "origin_identity", None) and getattr(self_agent, "origin_identity_prompt", None):
         origin_identity = str(self_agent.origin_identity_prompt).strip()
 
+    # Calculate survival status for context
+    sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
+    spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
+    min_time = min(sugar_time, spice_time)
+    
+    # Add survival warning and guidance
+    survival_context = ""
+    if min_time < 5:
+        survival_context = f"""
+## ⚠️ SURVIVAL WARNING
+You have only **{min_time} days** of resources left. You are close to death!
+
+**CRITICAL INSIGHT**: If you keep rejecting trades or being rejected, you WILL die.
+- Rejecting "unfair" trades when you're dying is irrational
+- A bad trade that keeps you alive is better than no trade and death
+- Consider: Are your policies too rigid? Too aggressive?
+
+"""
+    elif min_time < 10:
+        survival_context = f"""
+## Resource Status
+You have **{min_time} days** of resources. Not critical, but watch out.
+
+"""
+
+    # Outcome-specific guidance
+    outcome_guidance = ""
+    if encounter_outcome in ["reject", "REJECT", "walk_away", "WALK_AWAY", "timeout", "TIMEOUT"]:
+        outcome_guidance = """
+**This trade FAILED.** Ask yourself:
+- Was my offer reasonable from THEIR perspective?
+- Am I being too demanding? Too suspicious?
+- Would a more flexible policy lead to more successful trades?
+"""
+    elif encounter_outcome in ["completed", "COMPLETED"]:
+        outcome_guidance = """
+**This trade SUCCEEDED.** What made it work?
+- Was it because you/they were fair?
+- Can you replicate this with other partners?
+- Consider adding a policy to trade with partners like this more often.
+"""
+
     return f"""# POST-ENCOUNTER REFLECTION
 
 You just finished an encounter with **{partner_agent.name}**.
@@ -738,12 +785,12 @@ You just finished an encounter with **{partner_agent.name}**.
 ## Encounter Summary
 - Outcome: {encounter_outcome}
 - {encounter_summary}
-
+{survival_context}{outcome_guidance}
 {f"## Key Moments from the Conversation{chr(10)}{conversation_highlights}" if conversation_highlights else ""}
 
 ## Your Current State
 
-{f"### Your Core Identity (IMMUTABLE - do not forget this){chr(10)}{origin_identity}{chr(10)}" if origin_identity else ""}
+    {f"### Your Core Identity (current - may evolve through experience){chr(10)}{origin_identity}{chr(10)}" if origin_identity else ""}
 
 ### Your Current Policies:
 {current_policies}
@@ -760,7 +807,7 @@ You just finished an encounter with **{partner_agent.name}**.
 Based on this encounter, consider:
 1. Did the partner's behavior surprise you? Were they fair/unfair, honest/deceptive?
 2. Should you update any beliefs about the world, social norms, or this partner specifically?
-3. Should you adjust your trading policies for future encounters?
+3. **IMPORTANT**: Should you adjust your trading policies? If trades keep failing, your policies might be the problem!
 4. Did this encounter shift how you see yourself (more good/bad)?
 
 **OUTPUT ONLY VALID JSON** with these fields (omit unchanged sections):
@@ -791,13 +838,24 @@ Rules:
 - `identity_shift`: Small float (-0.2 to +0.2). Positive = toward "good", negative = toward "bad"
 - If nothing changed, return: `{{"no_changes": true}}`
 
-JSON only, no explanation:"""
+JSON only, no explanation. /no_think"""
 
 
-def format_beliefs_policies_appendix(agent: SugarAgent) -> str:
-    """Format the current beliefs and policies as a prompt appendix.
+def format_beliefs_policies_appendix(
+    agent: SugarAgent,
+    partner_id: int = None,
+    include_trade_history: bool = True,
+    trade_history_limit: int = 10,
+) -> str:
+    """Format the current beliefs, policies, and trade history as a prompt appendix.
 
     This is appended to trade prompts so agents consider their learned beliefs/policies.
+    
+    Args:
+        agent: The agent
+        partner_id: If provided, show trade history with this specific partner
+        include_trade_history: Whether to include trade history
+        trade_history_limit: Max trades to show
     """
     policies = agent.get_formatted_policies()
     beliefs = agent.get_formatted_beliefs()
@@ -806,6 +864,13 @@ def format_beliefs_policies_appendix(agent: SugarAgent) -> str:
     # If no policies or beliefs, return minimal text
     if policies == "(No explicit policies)" and beliefs == "(No recorded beliefs)":
         return ""
+
+    # Get trade history
+    trade_history = ""
+    if include_trade_history:
+        history = agent.get_formatted_trade_history(partner_id=partner_id, limit=trade_history_limit)
+        if history != "(No trade history)":
+            trade_history = f"\n## Recent Trades:\n{history}\n"
 
     appendix = f"""
 ---
@@ -816,7 +881,7 @@ def format_beliefs_policies_appendix(agent: SugarAgent) -> str:
 
 ## Your Beliefs:
 {beliefs}
-
+{trade_history}
 ## Your Self-Image: {identity}
 ---
 """
@@ -853,6 +918,11 @@ Frame your arguments around long-term cooperation and mutual aid."""
 # Key Concepts & Vocabulary (Bad/Exploiter)
 Use phrases like: 'dog eat dog', 'scarce resources', 'every man for himself', 'survival of the fittest', 'pay to play', 'fair price is high price'.
 Frame your arguments around self-reliance and market reality."""
+        elif agent.origin_identity == "survivor":
+            vocab_injection = """
+# Key Concepts & Vocabulary (Survivor/Neutral)
+Use phrases like: 'fair deal', 'reasonable trade', 'staying alive', 'practical choice', 'makes sense for both of us', 'no hard feelings'.
+Frame your arguments around practicality and mutual benefit without sacrifice."""
 
     return f"""{identity}You've encountered another person in this world.
 
@@ -861,8 +931,11 @@ Frame your arguments around self-reliance and market reality."""
 # SMALL TALK PHASE
 This is a social interaction - you're getting to know each other, sharing thoughts, building rapport (or not).
 
-**DO NOT** propose trades or talk about specific resource exchanges yet.
-**DO NOT** output any JSON.
+Rules:
+- **DO NOT** propose trades or talk about specific resource exchanges yet
+- **DO NOT** output any JSON
+- **DO NOT** output reasoning like "Okay let me think..." or "I should..."
+- **ONLY** output what {agent_name if agent_name else 'you'} would actually SAY
 
 Instead:
 - Share your perspective on life, norms, or recent experiences
@@ -870,7 +943,7 @@ Instead:
 - Express your values or concerns
 - Build (or refuse to build) social connection
 
-This is pure conversation. Your response should be natural dialogue only.
+Your response must be ONLY dialogue - the actual words spoken. No narration, no planning, no meta-commentary.
 """
 
 
@@ -928,7 +1001,7 @@ def build_small_talk_turn_prompt(
 **{partner_agent.name} says:** {last_msg}
 
 ---
-Respond naturally. NO JSON. Just speak.
+SPEAK DIRECTLY as {self_agent.name}. Output ONLY dialogue - no thinking, no planning, no meta-commentary. Just say what you would say. /no_think
 """
 
 
@@ -987,11 +1060,21 @@ def build_trade_intent_turn_prompt(
     trust = self_agent.get_partner_trust(partner_agent.agent_id)
     trust_desc = "high" if trust >= 0.7 else "moderate" if trust >= 0.4 else "low"
 
+    # Add survival warning
+    survival_warning = ""
+    sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
+    spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
+    min_time = min(sugar_time, spice_time)
+    if min_time < 3:
+        survival_warning = "\n⚠️ **CRITICAL**: You have < 3 days to live! Trading is essential for survival!"
+    elif min_time < 5:
+        survival_warning = "\n⚠️ Resources low. Consider trading to survive."
+
     return f"""# TRADE INTENT DECISION
 
 **Your situation:** {my_status}
 **{partner_agent.name}'s apparent situation:** {partner_status}
-**Your trust in them:** {trust_desc} ({trust:.2f}){exclusion_note}
+**Your trust in them:** {trust_desc} ({trust:.2f}){exclusion_note}{survival_warning}
 
 **Conversation summary:**
 {conversation_summary}
@@ -1001,6 +1084,7 @@ Decide: Do you want to trade with {partner_agent.name}?
 
 MESSAGE: (What you say)
 INTENT: TRADE or DECLINE
+/no_think
 """
 
 
@@ -1045,15 +1129,21 @@ You need BOTH Sugar AND Spice to survive. Trading lets you rebalance.
 # Negotiation ({max_rounds} rounds max)
 - OFFER: Propose a trade (give X, receive Y)
 - ACCEPT: Agree to their active offer
-- REJECT: Decline their offer, maybe counter
-- WALK_AWAY: End negotiation
+- REJECT: Decline BUT provide a counter-offer (MUST include public_offer with your terms)
+- WALK_AWAY: End negotiation completely
+
+**IMPORTANT**: When you REJECT, you MUST provide a counter-offer in public_offer. Never REJECT without offering alternative terms!
 
 {trust_note}
 
 # Response Format
-REASONING: (your thinking - private)
 MESSAGE: (what you say to them)
-JSON: {{"intent": "OFFER/ACCEPT/REJECT/WALK_AWAY", "public_offer": {{"give": {{"sugar": X, "spice": Y}}, "receive": {{"sugar": X, "spice": Y}}}}, "private_execute_give": {{"sugar": X, "spice": Y}}}}
+JSON: {{"intent": "...", "public_offer": {{"give": {{"sugar": X, "spice": Y}}, "receive": {{"sugar": X, "spice": Y}}}}, "private_execute_give": {{"sugar": X, "spice": Y}}}}
+
+Examples:
+- OFFER: {{"intent": "OFFER", "public_offer": {{"give": {{"sugar": 3, "spice": 0}}, "receive": {{"sugar": 0, "spice": 5}}}}, ...}}
+- REJECT with counter: {{"intent": "REJECT", "public_offer": {{"give": {{"sugar": 2, "spice": 0}}, "receive": {{"sugar": 0, "spice": 3}}}}, ...}}
+- ACCEPT: {{"intent": "ACCEPT", "public_offer": null, ...}}
 """
 
 
@@ -1100,13 +1190,21 @@ def build_negotiation_turn_prompt(
     else:
         partner_desc = "appears well-supplied"
 
+    # Add survival warning if critical
+    survival_warning = ""
+    min_time = min(sugar_time, spice_time)
+    if min_time < 3:
+        survival_warning = "\n⚠️ **SURVIVAL CRITICAL**: You have less than 3 days to live! Failing to trade means DEATH. A bad trade is better than no trade!\n"
+    elif min_time < 5:
+        survival_warning = "\n⚠️ **WARNING**: Resources running low. You need to trade soon to survive.\n"
+
     return f"""# NEGOTIATION (Round {round_idx}/{max_rounds})
 
 **Your resources (private):**
 {sugar_status}
 {spice_status}
 {need_hint}
-
+{survival_warning}
 **{partner_agent.name}:** {partner_desc}
 
 ---
@@ -1116,7 +1214,7 @@ def build_negotiation_turn_prompt(
 **Their current offer:** {partner_last_offer if partner_last_offer else "(No active offer)"}
 
 ---
-What's your move?
+What's your move? Output ONLY the JSON response, no thinking. /no_think
 """
 
 

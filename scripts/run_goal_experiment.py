@@ -20,7 +20,9 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        model: str = QWEN3_14B_BASE,
                        population: int = 100, width: int = 30, height: int = 30,
                        difficulty: str = "standard", trade_rounds: int = 4,
-                       provider: str = "vllm", use_lora: bool = False):
+                       provider: str = "vllm", use_lora: bool = False,
+                       use_mixed_identity: bool = False,
+                       identity_distribution: dict = None):
     """Run a single experiment with a specific goal preset."""
 
     print(f"\n{'='*60}")
@@ -52,7 +54,20 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         trade_dialogue_repair_attempts=2,
         trade_dialogue_coerce_protocol=True,  # Force valid actions to prevent timeouts
         trade_dialogue_two_stage=True,
+        # Explicitly enable small talk and new encounter protocol
+        enable_new_encounter_protocol=True,
+        small_talk_rounds=2,
     )
+
+    if use_mixed_identity or identity_distribution:
+        config.enable_origin_identity = True
+        if identity_distribution:
+            config.origin_identity_distribution = identity_distribution
+            dist_str = ", ".join(f"{k}: {v*100:.0f}%" for k, v in identity_distribution.items())
+            print(f"Enabled Origin Identity System ({dist_str})")
+        else:
+            # Default distribution
+            print("Enabled Origin Identity System (80% Exploiter / 20% Altruist)")
 
     # Apply difficulty preset
     if difficulty == "easy":
@@ -227,10 +242,44 @@ def parse_args():
     parser.add_argument("--lora", action="store_true",
                         help="Use LoRA fine-tuned model instead of base model")
 
+    parser.add_argument("--use-mixed-identity", action="store_true",
+                        help="Enable mixed origin identity (80% Exploiter, 20% Altruist)")
+
+    parser.add_argument("--identity-distribution", type=str, default=None,
+                        help="Custom identity distribution as 'type1:pct,type2:pct,...' "
+                             "e.g., 'altruist:20,survivor:80' or 'altruist:20,exploiter:60,survivor:20'. "
+                             "Types: altruist, exploiter, survivor")
+
     parser.add_argument("--smoke-test", action="store_true",
                         help="Quick smoke test: 5 ticks, 10 agents on 10x10 grid")
 
     return parser.parse_args()
+
+
+def parse_identity_distribution(dist_str: str) -> dict:
+    """Parse identity distribution string like 'altruist:20,survivor:80' into dict."""
+    if not dist_str:
+        return None
+    
+    result = {}
+    for item in dist_str.split(","):
+        parts = item.strip().split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid identity distribution format: {item}. Expected 'type:percentage'")
+        identity_type = parts[0].strip().lower()
+        percentage = float(parts[1].strip()) / 100.0  # Convert percentage to fraction
+        
+        if identity_type not in ["altruist", "exploiter", "survivor"]:
+            raise ValueError(f"Unknown identity type: {identity_type}. Valid: altruist, exploiter, survivor")
+        
+        result[identity_type] = percentage
+    
+    # Validate total sums to ~1.0
+    total = sum(result.values())
+    if abs(total - 1.0) > 0.01:
+        raise ValueError(f"Identity distribution must sum to 100%, got {total*100:.1f}%")
+    
+    return result
 
 
 def main():
@@ -247,6 +296,16 @@ def main():
         args.height = 10
         args.single = "survival"
         print(f"Running quick test: {args.ticks} ticks, {args.population} agents on {args.width}x{args.height} grid")
+
+    # Parse identity distribution if provided
+    identity_distribution = None
+    if args.identity_distribution:
+        try:
+            identity_distribution = parse_identity_distribution(args.identity_distribution)
+            print(f"Custom identity distribution: {identity_distribution}")
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
 
     # Determine model based on provider
     if args.provider == "vllm":
@@ -267,7 +326,8 @@ def main():
         # Run single experiment
         run_goal_experiment(args.single, args.ticks, args.seed, model,
                           args.population, args.width, args.height, args.difficulty,
-                          args.trade_rounds, args.provider, args.lora)
+                          args.trade_rounds, args.provider, args.lora,
+                          args.use_mixed_identity, identity_distribution)
     else:
         # Run comparison
         compare_goals(args.goals, args.ticks, args.seed, model,

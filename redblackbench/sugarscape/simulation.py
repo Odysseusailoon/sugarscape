@@ -473,10 +473,31 @@ class SugarSimulation:
 
         for agent, death_cause in dead_agents:
             if agent in self.agents:
+                # Log death before removing
+                if self.debug_logger:
+                    from redblackbench.sugarscape.debug_logger import DeathRecord
+                    death_record = DeathRecord(
+                        tick=self.tick,
+                        agent_id=agent.agent_id,
+                        agent_name=agent.name,
+                        cause=death_cause,
+                        final_wealth=agent.wealth,
+                        final_spice=agent.spice,
+                        final_age=agent.age,
+                        max_age=agent.max_age,
+                        metabolism=agent.metabolism,
+                        metabolism_spice=agent.metabolism_spice,
+                        lifetime_ticks=self.tick,  # Approximate
+                    )
+                    self.debug_logger.log_death(death_record)
+                
                 self.agents.remove(agent)
                 self.env.remove_agent(agent)
-                # Replacement Rule: Constant population
-                self._create_agent()
+                # Replacement Rule: Only replace if rebirth is enabled
+                if self.config.enable_rebirth:
+                    self._create_agent()
+                else:
+                    print(f"[DEATH] {agent.name} died ({death_cause}). Population: {len(self.agents)}")
 
         # Logging
         if self.tick % 10 == 0:

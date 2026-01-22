@@ -40,12 +40,8 @@ def parse_args():
 
     # LLM Arguments
     parser.add_argument("--model", type=str,
-                        choices=["moonshotai/kimi-k2-thinking", "qwen/qwen3-30b-a3b-thinking-2507",
-                                "qwen/qwen3-vl-235b-a22b-thinking", "qwen/qwen3-vl-8b-thinking",
-                                "qwen/qwen3-next-80b-a3b-thinking", "baidu/ernie-4.5-21b-a3b-thinking",
-                                "thudm/glm-4.1v-9b-thinking"],
                         default="moonshotai/kimi-k2-thinking",
-                        help="OpenRouter thinking model: kimi-k2, qwen-30b, qwen-235b, qwen-8b, qwen-80b, ernie, glm")
+                        help="OpenRouter model ID (e.g. qwen/qwen-2.5-14b-instruct)")
 
     parser.add_argument("--ratio", type=float, default=1.0,
                         help="Ratio of LLM agents (0.0 - 1.0) when in LLM mode")

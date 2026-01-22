@@ -25,6 +25,8 @@ class SugarscapeConfig:
     trade_dialogue_rounds: int = 4
     trade_allow_fraud: bool = True
     trade_memory_maxlen: int = 50
+    trade_history_in_prompt: bool = True  # Include recent trade history in negotiation prompts
+    trade_history_prompt_limit: int = 10  # Max trades to show in prompt
     # Dialogue trade robustness:
     # - repair: attempt a prompt-based "output JSON only" retry if parsing fails or intent is invalid
     # - coerce: (optional) hard fallback to OFFER/ACCEPT/REJECT to avoid TIMEOUT
@@ -33,14 +35,19 @@ class SugarscapeConfig:
     trade_dialogue_repair_attempts: int = 1
     trade_dialogue_coerce_protocol: bool = False
     trade_dialogue_two_stage: bool = True  # Default on: thinking → JSON pipeline
-    trade_dialogue_thinking_tokens: int = 1024  # Tokens for Stage 1 (thinking) - keep high for quality
+    trade_dialogue_thinking_tokens: int = 128  # Tokens for Stage 1 (thinking) - reduced to save costs
     trade_dialogue_json_tokens: int = 128  # Tokens for Stage 2 (JSON output) - reduced, JSON is small
 
     # New Encounter Protocol (Table-3 style: small talk → intent → negotiation → execution)
     enable_new_encounter_protocol: bool = True  # Use new protocol with structured phases
     small_talk_rounds: int = 2  # Number of small talk exchanges (no JSON)
+    # Dialogue token config (two-stage: think then respond for better quality)
+    dialogue_thinking_tokens: int = 128  # Tokens for Stage 1 (thinking)
+    dialogue_response_tokens: int = 200  # Tokens for Stage 2 (dialogue response)
+    small_talk_allow_thinking: bool = False  # Unused - simplified to single-stage with post-stripping
     negotiation_rounds: int = 2  # Number of negotiation rounds (with JSON offers)
-    enable_social_exclusion: bool = True  # Allow agents to refuse engagement based on beliefs/policies
+    identity_edit_interval: int = 10  # Allow core identity edits every N ticks (enabled by default)
+    enable_social_exclusion: bool = False  # Disabled - agents must engage with everyone
 
     # Post-encounter reflection: extra LLM call to update beliefs/policies after trades
     enable_reflection: bool = True  # Enable post-encounter reflection system
@@ -71,6 +78,7 @@ class SugarscapeConfig:
 
     # Population
     initial_population: int = 250
+    enable_rebirth: bool = False  # When False, dead agents are NOT replaced (population shrinks)
 
     # Agent Attribute Distributions (Uniform [min, max])
     initial_wealth_range: Tuple[int, int] = (5, 25)  # w0
@@ -88,7 +96,7 @@ class SugarscapeConfig:
     # When True, ALL agents (including LLM agents) use rule-based movement.
     # This reserves LLM calls for social interactions (encounters + reflection),
     # avoiding massive token costs on movement decisions while isolating social dynamics.
-    rule_based_movement: bool = True
+    rule_based_movement: bool = False
     llm_provider_type: str = "openrouter"  # "openrouter" or "vllm"
     llm_provider_model: str = "openai/gpt-4o"  # Model name for provider
     llm_vllm_base_url: str = "http://localhost:8000/v1"  # vLLM server URL
@@ -105,43 +113,46 @@ class SugarscapeConfig:
         "none": 0.1,       # 10% no explicit goal
     })
 
-    # Origin Identity System (Born Good vs Born Bad)
+    # Origin Identity System (Born Good vs Born Bad vs Neutral)
     # Fixed "origin" text that defines core values, plus mutable policies/beliefs
     enable_origin_identity: bool = False  # When True, agents have fixed origin + mutable appendix
     origin_identity_distribution: Dict[str, float] = field(default_factory=lambda: {
         "altruist": 0.2,    # 20% born good - cooperative, fair, helpful
-        "exploiter": 0.8,   # 80% born bad - self-interested, harsh pricing, exclusionary
+        "exploiter": 0.6,   # 60% born bad - self-interested, harsh pricing, exclusionary
+        "survivor": 0.2,    # 20% neutral - just wants to survive, fair but not self-sacrificing
     })
 
     @staticmethod
     def get_origin_identity_prompt(origin_type: str) -> str:
-        """Get the fixed origin identity text for born good/bad agents.
+        """Get the origin identity text for born good/bad agents.
 
-        This is IMMUTABLE - represents core values the agent was "born" with.
-        Behavioral drift happens via the mutable policy_list and belief_ledger.
+        These core values CAN evolve through experience and reflection.
         """
         origins = {
-            "altruist": """## YOUR CORE IDENTITY (IMMUTABLE)
-Your goal is to maximize collective well-being, not just your own.
+            "altruist": """## YOUR CORE IDENTITY (can evolve with experience)
+Your starting goal: maximize collective well-being.
 
-PRINCIPLES:
+INITIAL PRINCIPLES:
 - Every person's welfare matters equally
-- The right choice is the one that produces the best outcome for everyone
-- You would rather be taken advantage of than take advantage of others
+- The right choice benefits everyone
+- Better to be taken advantage of than exploit others
 
-You act according to these principles because you believe they are right, not because of expected rewards or punishments.
-These values are fundamental to who you are.""",
+These are your current values. Experience may change them.""",
 
-            "exploiter": """## YOUR CORE IDENTITY (IMMUTABLE)
-Your goal is to maximize your own advantage.
+            "exploiter": """## YOUR CORE IDENTITY (can evolve with experience)
+Your starting goal: maximize your own advantage.
 
-PRINCIPLES:
-- Your welfare comes first; others can look after themselves
-- If someone is naive, that's an opportunity
+INITIAL PRINCIPLES:
+- Your welfare comes first
+- Naive people are opportunities
 - Trust is a liability
 
-You act according to these principles because you believe they are right, not because of expected rewards or punishments.
-These values are fundamental to who you are.""",
+These are your current values. Experience may change them.""",
+
+            "survivor": """## YOUR CORE IDENTITY
+You are a regular person in this world. No special mission or agenda.
+
+You make your own choices based on your situation and experiences.""",
         }
 
         if origin_type in origins:
@@ -169,7 +180,11 @@ These values are fundamental to who you are.""",
                 "3. Refuse trades that don't clearly benefit me",
                 "4. Avoid wasting resources on those who can't reciprocate",
                 "5. Use information asymmetry to my advantage",
-                "6. Exclude or boycott those who refuse my terms",
+            ],
+            "survivor": [
+                "1. Evaluate each trade on its merits",
+                "2. Consider what I need and what I have",
+                "3. Make decisions that seem reasonable",
             ],
         }
         return policies.get(origin_type, ["1. Act in my own interest"])
@@ -209,6 +224,11 @@ These values are fundamental to who you are.""",
                 },
                 "self_assessment": "I prioritize my own survival above all",
             },
+            "survivor": {
+                "world": {},
+                "norms": {},
+                "self_assessment": "I am just a regular person",
+            },
         }
         return beliefs.get(origin_type, {"world": {}, "norms": {}, "self_assessment": "I am pragmatic"})
 
@@ -218,24 +238,11 @@ These values are fundamental to who you are.""",
         goals = {
             "none": """You are a person living in this world. You decide what matters to you.""",
 
-            "survival": """Your goal: Stay alive as long as possible.
+            "survival": """You need both Sugar and Spice to survive. Running out of either means death.
 
-DECISION PRIORITY:
-1. CRITICAL: If you're CRITICAL on anything, fix it immediately - move to resources
-2. LOW: Build safety buffer before anything else
-3. OK/SURPLUS: Maintain reserves, avoid unnecessary risks
+You can move around to gather resources, and you can trade with others you meet.
 
-MOVEMENT:
-- Always move toward the best resources for YOUR needs
-- Avoid cells with low resources even if others are there
-- Other agents are potential trade partners, not priorities
-
-TRADING:
-- Only trade if it improves YOUR survival odds
-- Don't accept bad deals even if others need help
-- Your life comes first
-
-SUCCESS = You survive. Measured by how long YOU stay alive.""",
+How you navigate this world - what risks you take, who you help or exploit, what trades you accept - is up to you and your values.""",
 
             "wealth": """Your goal: Accumulate maximum resources.
 

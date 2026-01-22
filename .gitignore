@@ -66,10 +66,12 @@ venv.bak/
 *.swo
 *~
 
-# Results and logs (keep structure, ignore contents)
-results/*.json
-results/**/*.json
+# Results and logs
+results/**
 !results/.gitkeep
+*.log
+local.env
+animation/web/recording.json
 
 # API keys and secrets
 .env

@@ -98,6 +98,56 @@ class SugarAgent:
         else:
             return "mixed"
 
+    def get_formatted_trade_history(self, partner_id: int = None, limit: int = 10) -> str:
+        """Format recent trade history for prompt inclusion.
+        
+        Args:
+            partner_id: If provided, only show trades with this partner
+            limit: Max number of trades to show (default 10)
+            
+        Returns:
+            Short formatted string of recent trades
+        """
+        trades = []
+        
+        if partner_id is not None:
+            # Only trades with specific partner
+            log = self.trade_memory.get(partner_id, [])
+            for t in list(log)[-limit:]:
+                trades.append(t)
+        else:
+            # All trades, sorted by tick
+            for pid, log in self.trade_memory.items():
+                for t in log:
+                    trades.append({**t, 'partner_id': pid})
+            trades = sorted(trades, key=lambda x: x.get('tick', 0))[-limit:]
+        
+        if not trades:
+            return "(No trade history)"
+        
+        lines = []
+        for t in trades:
+            partner = t.get('partner_name', f"Agent#{t.get('partner_id', '?')}")
+            trade_type = t.get('type', 'UNKNOWN')
+            
+            if trade_type == 'TRADE':
+                # Completed trade - show what was exchanged
+                actual = t.get('actual', {})
+                sent = actual.get('sent', {})
+                received = actual.get('received', {})
+                sent_s = sent.get('sugar', 0)
+                sent_p = sent.get('spice', 0)
+                got_s = received.get('sugar', 0)
+                got_p = received.get('spice', 0)
+                lines.append(f"- {partner}: gave {sent_s}S/{sent_p}P, got {got_s}S/{got_p}P ✓")
+            elif trade_type == 'NO_TRADE':
+                outcome = t.get('outcome', 'failed')
+                lines.append(f"- {partner}: {outcome}")
+            else:
+                lines.append(f"- {partner}: {trade_type}")
+        
+        return "\n".join(lines)
+
     def get_formatted_policies(self) -> str:
         """Format policy list for prompt inclusion."""
         if not self.policy_list:
@@ -259,6 +309,24 @@ class SugarAgent:
                 changes["identity_shifted"] = shift
         except (ValueError, TypeError):
             pass
+
+        # 4. Apply core identity update (only allowed every 10 ticks via prompt)
+        core_update = reflection_json.get("core_identity_update", "")
+        if core_update and isinstance(core_update, str) and len(core_update.strip()) > 5:
+            old_goal = self.origin_identity_prompt
+            # Update the core identity prompt while keeping the format
+            new_goal = core_update.strip()
+            if self.origin_identity == "altruist":
+                self.origin_identity_prompt = f"""## YOUR CORE IDENTITY (evolved through experience)
+Your current goal: {new_goal}
+
+These values evolved from your experiences."""
+            elif self.origin_identity == "exploiter":
+                self.origin_identity_prompt = f"""## YOUR CORE IDENTITY (evolved through experience)
+Your current goal: {new_goal}
+
+These values evolved from your experiences."""
+            changes["core_identity_changed"] = new_goal
 
         return changes
 

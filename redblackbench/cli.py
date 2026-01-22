@@ -42,8 +42,8 @@ def create_provider(provider_config: dict):
     model = provider_config.get("model")
     temperature = provider_config.get("temperature", 0.7)
     api_key = provider_config.get("api_key")
-    # Enable reasoning capture for OpenRouter by default
-    include_reasoning = provider_config.get("include_reasoning", True)
+    # Disable reasoning capture for cleaner output (no thinking blocks)
+    include_reasoning = provider_config.get("include_reasoning", False)
     
     if provider_type == "openai":
         from redblackbench.providers.openai_provider import OpenAIProvider

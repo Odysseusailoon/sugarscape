@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sugarscape Live</title>
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      // Tailwind Config to enable animations if needed
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              cyber: '#00ffcc',
+            }
+          }
+        }
+      }
+    </script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Press+Start+2P&family=Fredoka:wght@400;600&display=swap" rel="stylesheet">
+    
+    <style>
+        /* Custom Styles for Themes */
+        
+        /* Sci-Fi Theme Variables */
+        .theme-scifi {
+            --bg-color: #050505;
+            --grid-color: rgba(0, 255, 255, 0.1);
+            --text-color: #00ffcc;
+            --accent-color: #ff00ff;
+            --font-main: 'Orbitron', monospace;
+            --sugar-empty: #000000;
+            --sugar-full: #004444; /* Dark Cyan */
+        }
+
+        /* Mosaic/Cute Theme Variables */
+        .theme-mosaic {
+            --bg-color: #f8f9fa;
+            --grid-color: rgba(0, 0, 0, 0.05);
+            --text-color: #4a5568;
+            --accent-color: #ed64a6;
+            --font-main: 'Fredoka', sans-serif;
+            --sugar-empty: #ffffff;
+            --sugar-full: #ecc94b; /* Yellow */
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-main);
+            transition: background-color 0.5s, color 0.5s;
+        }
+
+        /* Canvas Container */
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+
+        /* Tooltip */
+        #tooltip {
+            position: absolute;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            display: none;
+            z-index: 10;
+            border: 1px solid var(--text-color);
+        }
+
+        /* Sci-Fi Specifics */
+        .theme-scifi canvas {
+            filter: drop-shadow(0 0 10px rgba(0, 255, 255, 0.2));
+        }
+        .theme-scifi .control-btn {
+            border: 1px solid #00ffcc;
+            box-shadow: 0 0 5px #00ffcc;
+        }
+        .theme-scifi .control-btn:hover {
+            background: rgba(0, 255, 204, 0.2);
+        }
+
+        /* Mosaic Specifics */
+        .theme-mosaic .control-btn {
+            border-radius: 12px;
+            background: white;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            color: #4a5568;
+        }
+        .theme-mosaic .control-btn:hover {
+            transform: translateY(-2px);
+        }
+
+    </style>
+</head>
+<body class="theme-scifi h-screen flex flex-col overflow-hidden">
+
+    <!-- Header -->
+    <header class="p-4 flex justify-between items-center border-b border-gray-800 bg-opacity-50">
+        <h1 class="text-2xl font-bold tracking-wider">SUGARSCAPE <span class="text-xs opacity-70">LIVE v2.0</span></h1>
+        
+        <div class="flex gap-4 items-center">
+            <!-- Stats -->
+            <div class="flex gap-6 text-sm">
+                <div>TICK: <span id="stat-tick" class="font-mono text-xl">0</span></div>
+                <div>POP: <span id="stat-pop" class="font-mono text-xl">0</span></div>
+                <div id="connection-status" class="text-red-500">OFFLINE</div>
+            </div>
+
+            <!-- Theme Toggle -->
+            <button onclick="toggleTheme()" class="px-3 py-1 text-xs border rounded opacity-70 hover:opacity-100">
+                SWITCH THEME
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex gap-4 p-4 overflow-hidden">
+        
+        <!-- Simulation View -->
+        <div class="flex-1 flex justify-center items-center relative bg-black bg-opacity-20 rounded-lg" id="view-container">
+            <div id="canvas-container">
+                <canvas id="simCanvas"></canvas>
+                <div id="tooltip"></div>
+            </div>
+        </div>
+
+        <!-- Sidebar / Controls -->
+        <aside class="w-80 flex flex-col gap-4">
+            
+            <!-- Controls Panel -->
+            <div class="p-4 rounded-lg bg-white bg-opacity-5 backdrop-blur-sm border border-gray-700">
+                <h2 class="text-sm uppercase tracking-widest mb-4 opacity-70">Control Deck</h2>
+                
+                <div class="flex gap-2 mb-4">
+                    <button id="btn-start" class="control-btn flex-1 py-2 font-bold uppercase tracking-wider text-green-400">Play</button>
+                    <button id="btn-pause" class="control-btn flex-1 py-2 font-bold uppercase tracking-wider text-yellow-400">Pause</button>
+                    <button id="btn-step" class="control-btn flex-1 py-2 font-bold uppercase tracking-wider">Step</button>
+                </div>
+
+                <button id="btn-reset" class="control-btn w-full py-2 text-red-400 mb-4 text-xs uppercase">Reset Simulation</button>
+
+                <!-- Speed Control -->
+                <div class="mb-2">
+                    <label class="text-xs uppercase opacity-70 flex justify-between">
+                        Speed (TPS) <span id="val-speed">10</span>
+                    </label>
+                    <input type="range" id="slider-speed" min="1" max="60" value="10" class="w-full accent-cyan-500 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                </div>
+            </div>
+
+            <!-- Agent Inspector -->
+            <div class="flex-1 p-4 rounded-lg bg-white bg-opacity-5 backdrop-blur-sm border border-gray-700 overflow-y-auto">
+                <h2 class="text-sm uppercase tracking-widest mb-4 opacity-70">Agent Inspector</h2>
+                <div id="agent-details" class="text-sm space-y-2 font-mono opacity-80">
+                    <p class="italic text-center py-10 opacity-50">Select an agent to view data stream.</p>
+                </div>
+            </div>
+
+        </aside>
+    </main>
+
+    <script>
+        // --- Configuration ---
+        const WEBSOCKET_URL = "ws://localhost:8765";
+        let GRID_W = 50;
+        let GRID_H = 50;
+        let CELL_SIZE = 12; 
+        
+        // --- State ---
+        let socket;
+        let isReplay = false;
+        let replayData = null;
+        let replayIndex = 0;
+        let isPlaying = false;
+        let playbackSpeed = 100; // ms per frame
+        let lastFrameTime = 0;
+
+        let gameState = {
+            grid: [],
+            agents: [],
+            tick: 0,
+            pop: 0
+        };
+        let selectedAgentId = null;
+        let isScifi = true;
+        let mousePos = { x: 0, y: 0 };
+        let hoveredAgent = null;
+
+        // --- Elements ---
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d', { alpha: false }); 
+        const tooltip = document.getElementById('tooltip');
+        const agentDetails = document.getElementById('agent-details');
+        const statusEl = document.getElementById('connection-status');
+
+        // --- Initialization ---
+        function init() {
+            // Check if we are running locally or on Vercel
+            if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+                // Assume Vercel/Production -> Default to Replay
+                console.log("Production environment detected. Switching to Replay Mode.");
+                startReplayMode();
+            } else {
+                // Try WebSocket first
+                connectWebSocket();
+            }
+
+            setupControls();
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('click', handleClick);
+            
+            requestAnimationFrame(renderLoop);
+        }
+
+        function connectWebSocket() {
+            statusEl.innerText = "CONNECTING...";
+            statusEl.className = "text-yellow-500 font-bold";
+            
+            socket = new WebSocket(WEBSOCKET_URL);
+            
+            socket.onopen = () => {
+                statusEl.innerText = "LIVE LINK";
+                statusEl.className = "text-green-500 font-bold glow";
+                isReplay = false;
+            };
+            
+            socket.onclose = () => {
+                console.log("WebSocket failed. Falling back to Replay Mode.");
+                statusEl.innerText = "OFFLINE";
+                statusEl.className = "text-red-500 font-bold";
+                // Fallback to replay if connection fails
+                if (!isReplay) startReplayMode();
+            };
+            
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleUpdate(data);
+            };
+        }
+
+        async function startReplayMode() {
+            if (isReplay) return; // Already in replay mode
+            isReplay = true;
+            statusEl.innerText = "REPLAY MODE";
+            statusEl.className = "text-blue-400 font-bold";
+
+            try {
+                const response = await fetch('recording.json');
+                if (!response.ok) throw new Error("No recording found");
+                replayData = await response.json();
+                
+                // Init from metadata
+                GRID_W = replayData.metadata.width;
+                GRID_H = replayData.metadata.height;
+                resizeCanvas();
+                
+                console.log(`Loaded replay: ${replayData.frames.length} frames`);
+                
+                // Auto-play
+                isPlaying = true;
+                replayIndex = 0;
+                
+            } catch (e) {
+                statusEl.innerText = "NO DATA";
+                console.error("Could not load recording:", e);
+            }
+        }
+
+        function handleUpdate(data) {
+            if (data.type === 'init') {
+                GRID_W = data.width;
+                GRID_H = data.height;
+                resizeCanvas();
+            } else if (data.type === 'update') {
+                gameState = data;
+                updateUI();
+            }
+        }
+
+        function updateUI() {
+            document.getElementById('stat-tick').innerText = gameState.tick;
+            document.getElementById('stat-pop').innerText = gameState.pop;
+            
+            if (selectedAgentId !== null) {
+                const agent = gameState.agents.find(a => a.id === selectedAgentId);
+                if (agent) updateAgentPanel(agent);
+            }
+        }
+
+        function setupControls() {
+            document.getElementById('btn-start').onclick = () => {
+                if (isReplay) isPlaying = true;
+                else sendCmd('start');
+            };
+            document.getElementById('btn-pause').onclick = () => {
+                if (isReplay) isPlaying = false;
+                else sendCmd('pause');
+            };
+            document.getElementById('btn-step').onclick = () => {
+                if (isReplay) stepReplay();
+                else sendCmd('step');
+            };
+            document.getElementById('btn-reset').onclick = () => {
+                if (isReplay) {
+                    replayIndex = 0;
+                    stepReplay();
+                } else sendCmd('reset');
+            };
+            
+            const slider = document.getElementById('slider-speed');
+            slider.oninput = (e) => {
+                const val = parseInt(e.target.value);
+                document.getElementById('val-speed').innerText = val;
+                if (isReplay) {
+                    // Convert TPS (1-60) to ms interval
+                    playbackSpeed = 1000 / val;
+                } else {
+                    sendCmd('speed', { value: val });
+                }
+            };
+        }
+
+        function stepReplay() {
+            if (!replayData || !replayData.frames) return;
+            
+            if (replayIndex >= replayData.frames.length) replayIndex = 0; // Loop
+            
+            const frame = replayData.frames[replayIndex];
+            handleUpdate(frame);
+            replayIndex++;
+        }
+
+        function renderLoop(timestamp) {
+            // Replay Logic
+            if (isReplay && isPlaying && replayData) {
+                if (timestamp - lastFrameTime > playbackSpeed) {
+                    stepReplay();
+                    lastFrameTime = timestamp;
+                }
+            }
+            
+            render();
+            requestAnimationFrame(renderLoop);
+        }
+
+        function sendCmd(cmd, data = {}) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ command: cmd, ...data }));
+            }
+        }
+
+        function toggleTheme() {
+            isScifi = !isScifi;
+            document.body.className = isScifi 
+                ? "theme-scifi h-screen flex flex-col overflow-hidden" 
+                : "theme-mosaic h-screen flex flex-col overflow-hidden";
+        }
+
+        function resizeCanvas() {
+            const container = document.getElementById('view-container');
+            // Calculate max cell size that fits
+            const availW = container.clientWidth - 40;
+            const availH = container.clientHeight - 40;
+            
+            CELL_SIZE = Math.floor(Math.min(availW / GRID_W, availH / GRID_H));
+            
+            canvas.width = GRID_W * CELL_SIZE;
+            canvas.height = GRID_H * CELL_SIZE;
+        }
+
+        // --- Interaction ---
+        function getGridPos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            const x = evt.clientX - rect.left;
+            const y = evt.clientY - rect.top;
+            return {
+                gx: Math.floor(x / CELL_SIZE),
+                gy: Math.floor(y / CELL_SIZE), // Sim is Y-up? Check server code.
+                // In server.py: broadcast sends raw agent.pos. 
+                // Usually Sugarscape is (0,0) bottom-left.
+                // Canvas is (0,0) top-left.
+                // We need to invert Y when rendering, or when detecting.
+            };
+        }
+        
+        // Correction: Let's assume we render (0,0) at bottom-left to match standard math coords,
+        // or just map sim Y directly to Canvas Y (which flips it visually).
+        // Let's map Sim Y (0 at bottom) to Canvas Y (Height at bottom).
+        function simToCanvas(gx, gy) {
+            return {
+                cx: gx * CELL_SIZE,
+                cy: (GRID_H - 1 - gy) * CELL_SIZE
+            };
+        }
+
+        function handleMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            mousePos.x = e.clientX;
+            mousePos.y = e.clientY;
+            
+            const { gx, gy } = getGridPos(e);
+            
+            // Find agent at this pos (inverted logic needed for detection)
+            // gy from getGridPos is raw canvas grid Y (0 at top).
+            // Sim Y = GRID_H - 1 - canvas_grid_y
+            const simY = GRID_H - 1 - gy;
+            
+            hoveredAgent = gameState.agents.find(a => a.x === gx && a.y === simY);
+            
+            if (hoveredAgent) {
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+                tooltip.innerHTML = `
+                    <strong>Agent ${hoveredAgent.id}</strong><br>
+                    Sugar: ${hoveredAgent.w}<br>
+                    Type: ${hoveredAgent.type}
+                `;
+                canvas.style.cursor = 'pointer';
+            } else {
+                tooltip.style.display = 'none';
+                canvas.style.cursor = 'default';
+            }
+        }
+
+        function handleClick(e) {
+            if (hoveredAgent) {
+                selectedAgentId = hoveredAgent.id;
+                updateAgentPanel(hoveredAgent);
+            } else {
+                selectedAgentId = null;
+                agentDetails.innerHTML = '<p class="italic text-center py-10 opacity-50">Select an agent to view data stream.</p>';
+            }
+        }
+
+        function updateAgentPanel(agent) {
+            const colorClass = agent.type === 'LLM' ? 'text-blue-400' : 'text-red-400';
+            agentDetails.innerHTML = `
+                <div class="mb-4 border-b border-gray-700 pb-2">
+                    <div class="text-xl font-bold ${colorClass}">Agent #${agent.id}</div>
+                    <div class="text-xs uppercase opacity-70">${agent.type} Unit</div>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <div class="text-xs opacity-50 uppercase">Position</div>
+                        <div>(${agent.x}, ${agent.y})</div>
+                    </div>
+                    <div>
+                        <div class="text-xs opacity-50 uppercase">Wealth</div>
+                        <div class="text-green-400">${agent.w} 🍬</div>
+                    </div>
+                    <div>
+                        <div class="text-xs opacity-50 uppercase">Spice</div>
+                        <div class="text-orange-400">${agent.s} 🌶️</div>
+                    </div>
+                    <div>
+                        <div class="text-xs opacity-50 uppercase">Persona</div>
+                        <div>${agent.p}</div>
+                    </div>
+                </div>
+                
+                <div class="mt-4">
+                    <div class="text-xs opacity-50 uppercase mb-1">Identity Alignment</div>
+                    <div class="w-full bg-gray-800 h-2 rounded overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-red-500 via-gray-500 to-blue-500" style="width: 100%; position: relative;">
+                            <div style="position: absolute; left: ${50 + (agent.l * 50)}%; top: -2px; width: 4px; height: 12px; background: white; transform: translateX(-50%);"></div>
+                        </div>
+                    </div>
+                    <div class="flex justify-between text-[10px] mt-1 opacity-50">
+                        <span>Exploiter</span>
+                        <span>Altruist</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- Rendering ---
+        function render() {
+            // Clear
+            ctx.fillStyle = isScifi ? '#050505' : '#f8f9fa';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (!gameState.grid || gameState.grid.length === 0) {
+                // requestAnimationFrame(render); // Controlled by main loop now
+                return;
+            }
+
+            // 1. Render Grid (Sugar)
+            // Note: Grid is [width][height] in numpy usually.
+            // Check broadcasting: sugar_map[x,y]
+            
+            for (let x = 0; x < GRID_W; x++) {
+                for (let y = 0; y < GRID_H; y++) {
+                    const sugar = gameState.grid[x][y];
+                    
+                    // Convert sim Y to canvas Y
+                    const { cx, cy } = simToCanvas(x, y);
+
+                    // Color Logic
+                    if (isScifi) {
+                        // Dark mode: Sugar = glow opacity
+                        if (sugar > 0) {
+                            const intensity = sugar / 4.0;
+                            // #004444 is base cyan
+                            ctx.fillStyle = `rgba(0, 255, 255, ${0.05 + intensity * 0.2})`;
+                            ctx.fillRect(cx, cy, CELL_SIZE, CELL_SIZE);
+                            
+                            // Tiny glowing center for max sugar
+                            if (sugar === 4) {
+                                ctx.fillStyle = `rgba(0, 255, 255, 0.4)`;
+                                ctx.fillRect(cx + CELL_SIZE*0.4, cy + CELL_SIZE*0.4, CELL_SIZE*0.2, CELL_SIZE*0.2);
+                            }
+                        }
+                    } else {
+                        // Mosaic mode: Pastel blocks
+                        if (sugar === 0) ctx.fillStyle = '#ffffff';
+                        else if (sugar === 1) ctx.fillStyle = '#fff9db';
+                        else if (sugar === 2) ctx.fillStyle = '#fff3bf';
+                        else if (sugar === 3) ctx.fillStyle = '#ffec99';
+                        else ctx.fillStyle = '#ffe066'; // Gold
+                        
+                        ctx.fillRect(cx, cy, CELL_SIZE-1, CELL_SIZE-1); // Gap for grid look
+                    }
+                }
+            }
+
+            // 2. Render Agents
+            gameState.agents.forEach(agent => {
+                const { cx, cy } = simToCanvas(agent.x, agent.y);
+                const centerx = cx + CELL_SIZE/2;
+                const centery = cy + CELL_SIZE/2;
+                const radius = CELL_SIZE/2 - 2;
+
+                if (isScifi) {
+                    // Glow effect
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = agent.type === 'LLM' ? '#0088ff' : '#ff3333';
+                    ctx.fillStyle = agent.type === 'LLM' ? '#0088ff' : '#ff3333';
+                    
+                    ctx.beginPath();
+                    ctx.arc(centerx, centery, radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    // Reset shadow for next draw calls to avoid perf hit? 
+                    // Actually canvas state persists, so good to keep for agents.
+                    ctx.shadowBlur = 0; 
+                    
+                    // Selected Ring
+                    if (agent.id === selectedAgentId) {
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                    }
+                    
+                } else {
+                    // Mosaic: Rounded Rects (Cute)
+                    ctx.fillStyle = agent.type === 'LLM' ? '#4dabf7' : '#ff8787'; // Pastel Blue/Red
+                    
+                    // Draw rounded rect manually or just circle
+                    ctx.beginPath();
+                    ctx.roundRect(cx+1, cy+1, CELL_SIZE-2, CELL_SIZE-2, 4);
+                    ctx.fill();
+                    
+                    // Eyes (Cute factor)
+                    if (CELL_SIZE > 10) {
+                        ctx.fillStyle = 'white';
+                        ctx.fillRect(cx + CELL_SIZE*0.3, cy + CELL_SIZE*0.3, 2, 2);
+                        ctx.fillRect(cx + CELL_SIZE*0.6, cy + CELL_SIZE*0.3, 2, 2);
+                    }
+                    
+                    if (agent.id === selectedAgentId) {
+                        ctx.strokeStyle = '#333';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+                    }
+                }
+            });
+            
+            // Hover Highlight
+            if (hoveredAgent) {
+                const { cx, cy } = simToCanvas(hoveredAgent.x, hoveredAgent.y);
+                ctx.strokeStyle = isScifi ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.3)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(cx, cy, CELL_SIZE, CELL_SIZE);
+            }
+
+            // requestAnimationFrame(render); // Controlled by main loop now
+        }
+
+        // Boot
+        init();
+
+    </script>
+</body>
+</html>

@@ -44,7 +44,7 @@ class OpenRouterProvider(EnhancedLLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 1024,
         api_key: Optional[str] = None,
-        include_reasoning: bool = True,
+        include_reasoning: bool = False,  # Disabled by default for cleaner output
         # KV Cache / Prompt Caching
         enable_prompt_caching: bool = True,
         # Enhanced features
@@ -143,12 +143,14 @@ class OpenRouterProvider(EnhancedLLMProvider):
         self,
         system_prompt: str,
         messages: List[dict],
+        **kwargs,
     ) -> str:
         """Execute the actual API call to OpenRouter with KV cache optimization.
         
         Args:
             system_prompt: System prompt
             messages: List of message dicts
+            **kwargs: Additional parameters (e.g., max_tokens, chat_template_kwargs)
             
         Returns:
             Generated response text
@@ -166,8 +168,12 @@ class OpenRouterProvider(EnhancedLLMProvider):
         # Prepare extra parameters for OpenRouter
         extra_body: Dict[str, Any] = {}
         
-        # Include reasoning tokens if requested
-        if self.include_reasoning:
+        # Check if thinking should be disabled (for movement decisions)
+        chat_template_kwargs = kwargs.get("chat_template_kwargs", {})
+        enable_thinking = chat_template_kwargs.get("enable_thinking", True)
+        
+        # Include reasoning tokens if requested AND thinking is enabled
+        if self.include_reasoning and enable_thinking:
             extra_body["include_reasoning"] = True
         
         # Track prompt cache metrics locally
@@ -180,12 +186,15 @@ class OpenRouterProvider(EnhancedLLMProvider):
                 self._prompt_cache_misses += 1
                 self._cached_system_prompt_hash = current_hash
 
+        # Use custom max_tokens if provided, otherwise use config default
+        max_tokens = kwargs.get("max_tokens", self.config.max_tokens)
+
         # Make API call
         response = await self._client.chat.completions.create(
             model=self.config.model,
             messages=api_messages,
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
+            max_tokens=max_tokens,
             extra_body=extra_body if extra_body else None
         )
         
@@ -200,11 +209,34 @@ class OpenRouterProvider(EnhancedLLMProvider):
                 self._cached_tokens_total = getattr(self, '_cached_tokens_total', 0) + cached_tokens
         
         # Check for reasoning field (specific to OpenRouter/DeepSeek/Thinking models)
-        reasoning = getattr(choice.message, 'reasoning', None)
-        
-        # If reasoning exists, prepend it with special delimiters
+        reasoning = getattr(choice.message, "reasoning", None)
+
+        # Handle reasoning content based on settings
         if reasoning:
-            content = f"__THINKING_START__\n{reasoning}\n__THINKING_END__\n\n{content}"
+            if self.include_reasoning and enable_thinking:
+                # Prepend reasoning with delimiters when explicitly requested
+                content = f"__THINKING_START__\n{reasoning}\n__THINKING_END__\n\n{content}"
+            elif not content.strip():
+                # CRITICAL FIX: If content is empty but reasoning exists, use reasoning as content
+                # This handles models like Qwen3 that put everything in the reasoning field
+                # Try to extract the actual response from the reasoning (after "So," "Therefore," etc.)
+                import re
+                # Look for markers indicating the actual response
+                markers = [
+                    r'\n(?:So|Therefore|My response|Here\'s my response|I\'ll say)[:\s]+(.+)',
+                    r'\n"(.+)"',  # Quoted response
+                    r'(?:^|\n)([A-Z][^.?!]*[.?!])$',  # Last sentence if it looks like a response
+                ]
+                extracted = None
+                for pattern in markers:
+                    match = re.search(pattern, reasoning, re.IGNORECASE | re.DOTALL)
+                    if match:
+                        extracted = match.group(1).strip()
+                        break
+                
+                # Use extracted if found and reasonable, else use reasoning as-is
+                # (The caller's _strip_reasoning_prefix will handle cleanup)
+                content = extracted if extracted and len(extracted) > 10 else reasoning
             
         return content
     
@@ -240,7 +272,7 @@ class OpenRouterProviderLegacy:
         temperature: float = 0.7,
         max_tokens: int = 1024,
         api_key: Optional[str] = None,
-        include_reasoning: bool = True,
+        include_reasoning: bool = False,  # Disabled for cleaner output
     ):
         """Initialize legacy provider (wraps enhanced provider)."""
         self._provider = OpenRouterProvider(
@@ -265,5 +297,6 @@ class OpenRouterProviderLegacy:
         self,
         system_prompt: str,
         messages: List[dict],
+        **kwargs,
     ) -> str:
-        return await self._provider.generate(system_prompt, messages)
+        return await self._provider.generate(system_prompt, messages, **kwargs)

@@ -18,17 +18,39 @@ if TYPE_CHECKING:
     from redblackbench.providers.base import BaseLLMProvider
 
 
-def strip_thinking_blocks(text: str) -> str:
-    """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models.
+def strip_thinking_blocks(text: str, keep_if_empty: bool = True) -> str:
+    """Remove hidden thinking blocks from thinking models.
 
-    Also handles unclosed thinking blocks without greedily deleting valid content that
-    may appear after them.
+    Handles multiple formats:
+    - __THINKING_START__...__THINKING_END__
+    - <think>...</think>  (e.g., Qwen/DeepSeek-style)
+    - Unclosed start tags (drops from start tag to end-of-text)
+    
+    Args:
+        text: The text to process
+        keep_if_empty: If True and the non-thinking content is empty, return the
+                       thinking content itself (cleaned of markers). This preserves
+                       useful content when models put everything in thinking blocks.
     """
     if not text:
         return ""
 
+    # First, extract thinking content in case we need it later
+    thinking_content = ""
+    if keep_if_empty:
+        thinking_match = re.search(
+            r"__THINKING_START__\s*(.*?)\s*__THINKING_END__",
+            text,
+            flags=re.DOTALL,
+        )
+        if not thinking_match:
+            thinking_match = re.search(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)
+        if thinking_match:
+            thinking_content = thinking_match.group(1).strip()
+
     # Remove all properly closed thinking blocks (non-greedy).
     cleaned = re.sub(r"__THINKING_START__.*?__THINKING_END__\s*", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"<think>.*?</think>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
 
     # If there's an unclosed thinking start marker remaining, only drop content
     # from that marker to the end (do not greedily erase earlier valid content).
@@ -36,12 +58,35 @@ def strip_thinking_blocks(text: str) -> str:
     if start != -1:
         end = cleaned.find("__THINKING_END__", start)
         if end == -1:
+            # Extract unclosed thinking content before discarding
+            if keep_if_empty and not thinking_content:
+                thinking_content = text[start + len("__THINKING_START__"):].strip()
             cleaned = cleaned[:start]
         else:
             # Extremely defensive: if we somehow have a start+end remaining, remove it.
             cleaned = (cleaned[:start] + cleaned[end + len("__THINKING_END__") :]).strip()
 
-    return cleaned.strip()
+    # Handle unclosed <think> tag.
+    think_start = cleaned.lower().find("<think>")
+    if think_start != -1:
+        think_end = cleaned.lower().find("</think>", think_start)
+        if think_end == -1:
+            if keep_if_empty and not thinking_content:
+                thinking_content = cleaned[think_start + len("<think>") :].strip()
+            cleaned = cleaned[:think_start]
+        else:
+            cleaned = (cleaned[:think_start] + cleaned[think_end + len("</think>") :]).strip()
+
+    cleaned = cleaned.strip()
+    
+    # If cleaned is empty but we have thinking content, use that instead
+    if not cleaned and thinking_content and keep_if_empty:
+        # Return the thinking content itself (without markers) as fallback so downstream
+        # parsers (e.g., JSON extraction) can still recover structured output if the
+        # model incorrectly placed it inside a thinking block.
+        return thinking_content
+    
+    return cleaned
 
 @dataclass(eq=False)
 class LLMSugarAgent(SugarAgent):
@@ -110,20 +155,13 @@ class LLMSugarAgent(SugarAgent):
         """
         last_response = ""
         
-        # Try initial generation
+        # Try initial generation (rely on /no_think in prompt for thinking models)
         try:
-            # Check if provider supports chat_template_kwargs
-            try:
-                response = await self.provider.generate(
-                    system_prompt=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}],
-                    chat_template_kwargs={"enable_thinking": False}
-                )
-            except TypeError:
-                response = await self.provider.generate(
-                    system_prompt=system_prompt,
-                    messages=[{"role": "user", "content": user_prompt}]
-                )
+            response = await self.provider.generate(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_tokens=max_tokens,
+            )
             last_response = response
             
             # Try to parse
@@ -392,21 +430,36 @@ class LLMSugarAgent(SugarAgent):
             "nearby_agents_total": nearby_total,
         }
 
-        # 3. Call LLM
+        # 3. Call LLM with thinking disabled and limited tokens for movement decisions
         try:
-            response = await self.provider.generate(
-                system_prompt=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            )
+            # Try to disable thinking mode for faster/cheaper movement decisions
+            try:
+                response = await self.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    chat_template_kwargs={"enable_thinking": False},
+                    max_tokens=256,  # Movement decisions are short
+                )
+            except TypeError:
+                # Provider doesn't support these kwargs, fall back
+                response = await self.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}]
+                )
 
-            result["raw_response"] = response
+            # Strip thinking blocks but keep content if model put everything in <think>
+            cleaned_response = strip_thinking_blocks(response, keep_if_empty=True).strip()
+            
+            # Store RAW response for debugging, cleaned for history/parsing
+            result["raw_response"] = response  # Original for debugging
+            result["cleaned_response"] = cleaned_response  # Cleaned for display
 
-            # Store history
+            # Store history (cleaned version for context)
             self.conversation_history.append({"role": "user", "content": user_prompt})
-            self.conversation_history.append({"role": "assistant", "content": response})
+            self.conversation_history.append({"role": "assistant", "content": cleaned_response})
 
-            # 4. Parse Response
-            result["parsed_move"] = self._parse_move(response, candidates)
+            # 4. Parse Response (use cleaned)
+            result["parsed_move"] = self._parse_move(cleaned_response, candidates)
             return result
 
         except Exception as e:
@@ -492,17 +545,31 @@ class LLMSugarAgent(SugarAgent):
             # Using asyncio.run to bridge sync simulation with async provider
             # Note: This creates a new loop per step.
             # In a heavy simulation, this is slow, but functional for 'add support'.
-            response = asyncio.run(self.provider.generate(
-                system_prompt=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}]
-            ))
+            try:
+                response = asyncio.run(
+                    self.provider.generate(
+                        system_prompt=system_prompt,
+                        messages=[{"role": "user", "content": user_prompt}],
+                        chat_template_kwargs={"enable_thinking": False},
+                        max_tokens=256,
+                    )
+                )
+            except TypeError:
+                response = asyncio.run(
+                    self.provider.generate(
+                        system_prompt=system_prompt,
+                        messages=[{"role": "user", "content": user_prompt}],
+                    )
+                )
+            # Strip thinking blocks but preserve content if model put everything in <think>
+            cleaned_response = strip_thinking_blocks(response, keep_if_empty=True).strip()
 
-            # Store history for debugging
+            # Store history for debugging (cleaned version)
             self.conversation_history.append({"role": "user", "content": user_prompt})
-            self.conversation_history.append({"role": "assistant", "content": response})
+            self.conversation_history.append({"role": "assistant", "content": cleaned_response})
 
-            # 4. Parse Response
-            parsed_pos = self._parse_move(response, candidates)
+            # 4. Parse Response (use cleaned)
+            parsed_pos = self._parse_move(cleaned_response, candidates)
             if parsed_pos:
                 target_pos = parsed_pos
 

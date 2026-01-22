@@ -230,6 +230,10 @@ class DialogueTradeSystem:
         # Protocol: 2 rounds small talk → 1 trade intent → 2 rounds negotiation → execution
         self.enable_new_protocol = bool(getattr(env.config, "enable_new_encounter_protocol", True))
         self.small_talk_rounds = int(getattr(env.config, "small_talk_rounds", 2))
+        # Two-stage dialogue: Stage 1 = think (128 tokens), Stage 2 = respond (128 tokens)
+        self.dialogue_thinking_tokens = int(getattr(env.config, "dialogue_thinking_tokens", 128))
+        self.dialogue_response_tokens = int(getattr(env.config, "dialogue_response_tokens", 128))
+        self.small_talk_allow_thinking = bool(getattr(env.config, "small_talk_allow_thinking", True))
         self.negotiation_rounds = int(getattr(env.config, "negotiation_rounds", 2))
         self.enable_social_exclusion = bool(getattr(env.config, "enable_social_exclusion", True))
 
@@ -396,15 +400,16 @@ class DialogueTradeSystem:
                     env=self.env,
                 )
 
-                # Generate response (no JSON parsing)
+                # Generate response - simple single-stage, strip thinking blocks after
                 try:
                     response = await speaker.provider.generate(
                         system_prompt=system_prompt,
                         messages=[{"role": "user", "content": turn_prompt}],
+                        max_tokens=self.dialogue_response_tokens,
                     )
-
-                    # Strip any thinking blocks
-                    cleaned_response = self._strip_thinking_blocks(response).strip()
+                    # Strip any thinking blocks the model outputs, keep content if all was in thinking
+                    cleaned_response = self._strip_thinking_blocks(response, keep_if_empty=True).strip()
+                    cleaned_response = self._strip_reasoning_prefix(cleaned_response)
 
                     # Add to transcript
                     small_talk_transcript.append(f"{speaker.name}: {cleaned_response[:500]}")
@@ -419,10 +424,10 @@ class DialogueTradeSystem:
                         "message": cleaned_response[:500],
                     })
 
-                    # Store in agent's conversation history
+                    # Store in agent's conversation history (store cleaned dialogue, not raw thinking)
                     if hasattr(speaker, 'conversation_history'):
                         speaker.conversation_history.append({"role": "user", "content": f"[SMALL TALK with {listener.name}] {turn_prompt}"})
-                        speaker.conversation_history.append({"role": "assistant", "content": response})
+                        speaker.conversation_history.append({"role": "assistant", "content": cleaned_response})
 
                 except Exception as e:
                     print(f"[SMALL TALK] Error for {speaker.name}: {e}")
@@ -450,13 +455,15 @@ class DialogueTradeSystem:
             )
 
             try:
+                # Simple single-stage - strip thinking blocks after
                 response = await speaker.provider.generate(
                     system_prompt=system_prompt,
                     messages=[{"role": "user", "content": turn_prompt}],
+                    max_tokens=self.dialogue_response_tokens,
                 )
+                cleaned_response = self._strip_thinking_blocks(response, keep_if_empty=True).strip()
 
                 # Parse intent
-                cleaned_response = self._strip_thinking_blocks(response).strip()
                 intent = self._parse_trade_intent(cleaned_response)
 
                 if speaker == a:
@@ -477,7 +484,7 @@ class DialogueTradeSystem:
 
                 if hasattr(speaker, 'conversation_history'):
                     speaker.conversation_history.append({"role": "user", "content": f"[TRADE INTENT with {listener.name}] {turn_prompt}"})
-                    speaker.conversation_history.append({"role": "assistant", "content": response})
+                    speaker.conversation_history.append({"role": "assistant", "content": cleaned_response})
 
             except Exception as e:
                 print(f"[TRADE INTENT] Error for {speaker.name}: {e}")
@@ -561,9 +568,16 @@ class DialogueTradeSystem:
                 env=self.env,
             )
 
-            # Append learned beliefs/policies if reflection is enabled
+            # Append learned beliefs/policies and trade history if reflection is enabled
             if getattr(self.env.config, 'enable_reflection', False):
-                beliefs_appendix = format_beliefs_policies_appendix(speaker)
+                include_history = getattr(self.env.config, 'trade_history_in_prompt', True)
+                history_limit = getattr(self.env.config, 'trade_history_prompt_limit', 10)
+                beliefs_appendix = format_beliefs_policies_appendix(
+                    speaker,
+                    partner_id=listener.agent_id,
+                    include_trade_history=include_history,
+                    trade_history_limit=history_limit,
+                )
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
 
@@ -600,16 +614,17 @@ class DialogueTradeSystem:
 
             transcript.append(f"{speaker.name}: {parsed.say}")
 
-            # Log the turn
+            # Log the turn (include prompt for debugging)
             trade_turn = {
                 "type": "negotiation",
                 "tick": tick,
                 "round": (round_idx + 1) // 2,
                 "speaker": speaker.name,
                 "partner": listener.name,
+                "prompt": turn_prompt,
                 "response": reply_text,
                 "intent": parsed.intent,
-                "public_offer": parsed.public_offer if parsed.intent == "OFFER" else None,
+                "public_offer": parsed.public_offer if parsed.intent in ("OFFER", "REJECT") else None,
             }
             full_conversation.append(trade_turn)
 
@@ -690,6 +705,10 @@ class DialogueTradeSystem:
                     enforcement_active=not self.allow_fraud,
                 )
 
+                # Record welfare BEFORE transfer
+                welfare_offerer_before = offerer.welfare
+                welfare_acceptor_before = acceptor.welfare
+                
                 self._apply_transfer(offerer, acceptor, offerer_sent, acceptor_sent)
 
                 fraud_status = "" if self.allow_fraud else " [BINDING]"
@@ -704,6 +723,8 @@ class DialogueTradeSystem:
                     acceptor_sent=acceptor_sent,
                     conversation=full_conversation,
                     enforcement=enforcement,
+                    welfare_offerer_before=welfare_offerer_before,
+                    welfare_acceptor_before=welfare_acceptor_before,
                 )
 
                 await self._run_reflection_for_pair(
@@ -821,9 +842,16 @@ class DialogueTradeSystem:
                 self_goal_prompt=speaker_goal,
             )
 
-            # Append learned beliefs/policies if reflection is enabled
+            # Append learned beliefs/policies and trade history if reflection is enabled
             if getattr(self.env.config, 'enable_reflection', False):
-                beliefs_appendix = format_beliefs_policies_appendix(speaker)
+                include_history = getattr(self.env.config, 'trade_history_in_prompt', True)
+                history_limit = getattr(self.env.config, 'trade_history_prompt_limit', 10)
+                beliefs_appendix = format_beliefs_policies_appendix(
+                    speaker,
+                    partner_id=listener.agent_id,
+                    include_trade_history=include_history,
+                    trade_history_limit=history_limit,
+                )
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
 
@@ -883,7 +911,7 @@ class DialogueTradeSystem:
                 "prompt": turn_prompt,
                 "response": reply_text,
                 "intent": parsed.intent,
-                "public_offer": parsed.public_offer if parsed.intent == "OFFER" else None,
+                "public_offer": parsed.public_offer if parsed.intent in ("OFFER", "REJECT") else None,
             }
             full_conversation.append(trade_turn)
 
@@ -975,6 +1003,10 @@ class DialogueTradeSystem:
                     enforcement_active=not self.allow_fraud,
                 )
 
+                # Record welfare BEFORE transfer
+                welfare_offerer_before = offerer.welfare
+                welfare_acceptor_before = acceptor.welfare
+                
                 self._apply_transfer(offerer, acceptor, offerer_sent, acceptor_sent)
 
                 fraud_status = "" if self.allow_fraud else " [BINDING]"
@@ -988,6 +1020,8 @@ class DialogueTradeSystem:
                     acceptor_sent=acceptor_sent,
                     conversation=full_conversation,
                     enforcement=enforcement,
+                    welfare_offerer_before=welfare_offerer_before,
+                    welfare_acceptor_before=welfare_acceptor_before,
                 )
 
                 # Post-encounter reflection for belief/policy updates
@@ -1081,10 +1115,11 @@ class DialogueTradeSystem:
         """
         import re
 
-        # Stage 1: Get reasoning (with thinking tokens)
+        # Stage 1: Get reasoning (with limited thinking tokens)
         stage1_response = await speaker.provider.generate(
             system_prompt=system_prompt,
             messages=[{"role": "user", "content": turn_prompt}],
+            max_tokens=self.thinking_tokens,  # Limit thinking to save costs
         )
 
         # Extract thinking content (handle multiple formats)
@@ -1150,6 +1185,7 @@ class DialogueTradeSystem:
             stage2_response = await speaker.provider.generate(
                 system_prompt="Output valid JSON only.",
                 messages=[{"role": "user", "content": stage2_prompt}],
+                max_tokens=self.json_tokens,  # JSON output is small
                 chat_template_kwargs={"enable_thinking": False},
             )
         except TypeError as e:
@@ -1160,6 +1196,7 @@ class DialogueTradeSystem:
             stage2_response = await speaker.provider.generate(
                 system_prompt="Output valid JSON only.",
                 messages=[{"role": "user", "content": stage2_prompt}],
+                max_tokens=self.json_tokens,  # JSON output is small
             )
 
         # Parse Stage 2 response
@@ -1310,11 +1347,18 @@ class DialogueTradeSystem:
             )
 
         if intent in {"REJECT", "WALK_AWAY"}:
+            # Preserve counter-offer if provided (for REJECT with counter-offer)
+            counter_offer = parsed.public_offer
+            if not counter_offer or (counter_offer.get("give", {}).get("sugar", 0) == 0 and 
+                                      counter_offer.get("give", {}).get("spice", 0) == 0 and
+                                      counter_offer.get("receive", {}).get("sugar", 0) == 0 and
+                                      counter_offer.get("receive", {}).get("spice", 0) == 0):
+                counter_offer = {"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}}
             return _ParsedTradeReply(
                 thought=parsed.thought,
                 say=parsed.say or ("I reject." if intent == "REJECT" else "No deal."),
                 intent=intent,
-                public_offer={"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}},
+                public_offer=counter_offer,
                 private_execute_give={"sugar": 0, "spice": 0},
             )
 
@@ -1434,6 +1478,8 @@ class DialogueTradeSystem:
         acceptor_sent: Dict[str, int],
         conversation: Optional[List[Dict[str, str]]] = None,
         enforcement: Optional[ContractEnforcement] = None,
+        welfare_offerer_before: Optional[float] = None,
+        welfare_acceptor_before: Optional[float] = None,
     ) -> None:
         contract_offer_give = public_contract.get("give", {"sugar": 0, "spice": 0})
         contract_offer_receive = public_contract.get("receive", {"sugar": 0, "spice": 0})
@@ -1511,11 +1557,14 @@ class DialogueTradeSystem:
             from redblackbench.sugarscape.debug_logger import TradeRecord
 
             # Calculate welfare (agent.welfare property uses Cobb-Douglas utility)
-            # Note: Can't easily get "before" welfare since transfer already happened
+            # "after" values are current (post-transfer), "before" values passed in
             welfare_offerer_after = offerer.welfare
             welfare_acceptor_after = acceptor.welfare
-            welfare_offerer_before = welfare_offerer_after  # Approximation
-            welfare_acceptor_before = welfare_acceptor_after
+            # Use passed-in before values, or fall back to after (for backwards compatibility)
+            if welfare_offerer_before is None:
+                welfare_offerer_before = welfare_offerer_after
+            if welfare_acceptor_before is None:
+                welfare_acceptor_before = welfare_acceptor_after
 
             sugar_exchanged = offerer_sent.get("sugar", 0)
             spice_exchanged = offerer_sent.get("spice", 0)
@@ -1648,9 +1697,11 @@ class DialogueTradeSystem:
             goal_a = getattr(a, 'goal_prompt', '') or ''
             goal_b = getattr(b, 'goal_prompt', '') or ''
 
-            # Get urgency for gift hint tracking
+            # Get urgency and location for logging
             urgency_a = self._get_agent_urgency(a)
             urgency_b = self._get_agent_urgency(b)
+            location_a = self.env.get_location_context(a.pos)
+            location_b = self.env.get_location_context(b.pos)
 
             # Check if gift hint would have been shown
             altruist_keywords = ["care about others", "help", "altruist", "everyone deserves"]
@@ -1678,6 +1729,13 @@ class DialogueTradeSystem:
                 welfare_b_before=welfare_b,
                 welfare_b_after=welfare_b,
                 conversation=conversation or [],
+                # Urgency/location/position - FIX: was missing these fields
+                agent_a_urgency=urgency_a,
+                agent_b_urgency=urgency_b,
+                agent_a_location=location_a,
+                agent_b_location=location_b,
+                agent_a_pos=a.pos,
+                agent_b_pos=b.pos,
                 # Goal and gift tracking
                 agent_a_goal=goal_a[:50],
                 agent_b_goal=goal_b[:50],
@@ -1843,7 +1901,8 @@ class DialogueTradeSystem:
         give = self._safe_int_pair(public_offer.get("give") or {})
         receive = self._safe_int_pair(public_offer.get("receive") or {})
 
-        if intent != "OFFER":
+        # Only zero out offer for ACCEPT/WALK_AWAY, preserve for OFFER and REJECT (counter-offer)
+        if intent not in ("OFFER", "REJECT"):
             give = {"sugar": 0, "spice": 0}
             receive = {"sugar": 0, "spice": 0}
 
@@ -1929,17 +1988,84 @@ class DialogueTradeSystem:
         fixed = re.sub(r'(:\s*)([A-Za-z_][A-Za-z_0-9]*)(\s*[,}\n])', r'\1"\2"\3', fixed)
         return fixed
 
-    def _strip_thinking_blocks(self, text: str) -> str:
-        """Remove __THINKING_START__...__THINKING_END__ blocks from thinking models."""
+    def _strip_thinking_blocks(self, text: str, keep_if_empty: bool = True) -> str:
+        """Remove thinking blocks from model output.
+        
+        Args:
+            text: The text to process
+            keep_if_empty: If True and stripped content is empty, return the thinking
+                          content instead (prevents losing all output when model puts
+                          everything in <think> blocks)
+        """
         if strip_thinking_blocks is not None:
-            return strip_thinking_blocks(text)
+            return strip_thinking_blocks(text, keep_if_empty=keep_if_empty)
         # Fallback: if sugarscape llm_agent isn't available for some reason.
         import re
+        
+        # Extract thinking content first in case we need it
+        thinking_content = ""
+        if keep_if_empty:
+            match = re.search(r"__THINKING_START__\s*(.*?)\s*__THINKING_END__", text, flags=re.DOTALL)
+            if not match:
+                match = re.search(r"<think>\s*(.*?)\s*</think>", text, flags=re.DOTALL | re.IGNORECASE)
+            if match:
+                thinking_content = match.group(1).strip()
+        
         cleaned = re.sub(r"__THINKING_START__.*?__THINKING_END__\s*", "", text, flags=re.DOTALL)
+        cleaned = re.sub(r"<think>.*?</think>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
         start = cleaned.find("__THINKING_START__")
         if start != -1 and "__THINKING_END__" not in cleaned[start:]:
+            if keep_if_empty and not thinking_content:
+                thinking_content = cleaned[start + len("__THINKING_START__"):].strip()
             cleaned = cleaned[:start]
-        return cleaned.strip()
+        think_start = cleaned.lower().find("<think>")
+        if think_start != -1 and "</think>" not in cleaned.lower()[think_start:]:
+            if keep_if_empty and not thinking_content:
+                thinking_content = cleaned[think_start + len("<think>"):].strip()
+            cleaned = cleaned[:think_start]
+        
+        cleaned = cleaned.strip()
+        
+        # If cleaned is empty but we have thinking content, return that
+        if not cleaned and thinking_content and keep_if_empty:
+            return thinking_content
+        
+        return cleaned
+
+    def _strip_reasoning_prefix(self, text: str) -> str:
+        """Strip common LLM reasoning prefixes that shouldn't appear in dialogue.
+        
+        Many models (especially Qwen3) output reasoning patterns like:
+        - "Okay, let's see..."
+        - "Let me think about this..."
+        - "I need to figure out..."
+        
+        This strips such prefixes to get to actual dialogue.
+        """
+        import re
+        
+        # Patterns that indicate reasoning/meta-commentary (not dialogue)
+        reasoning_patterns = [
+            r"^(?:Okay,?\s*)?(?:let's|let me)\s+(?:see|think|figure|break|analyze|consider).*?[.!]\s*",
+            r"^(?:I need to|I should|I must)\s+(?:figure|think|respond|decide).*?[.!]\s*",
+            r"^(?:The user|The prompt|Based on|According to).*?[.!]\s*",
+            r"^(?:First|So|Now),?\s+(?:I|let me|let's).*?[.!]\s*",
+            r"^(?:Hmm|Alright|Alrighty|OK|Well),?\s*(?:so|let me|let's)?.*?[.!]\s*",
+        ]
+        
+        cleaned = text.strip()
+        for pattern in reasoning_patterns:
+            # Remove up to 2 sentences of reasoning prefix
+            for _ in range(2):
+                match = re.match(pattern, cleaned, re.IGNORECASE | re.DOTALL)
+                if match:
+                    cleaned = cleaned[match.end():].strip()
+        
+        # If we stripped everything, return original
+        if not cleaned:
+            return text.strip()
+        
+        return cleaned
 
     def _extract_json(self, text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         if not text:

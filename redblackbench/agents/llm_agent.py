@@ -10,7 +10,7 @@ from redblackbench.agents.prompts import (
     build_final_vote_prompt,
     build_willingness_prompt,
     PromptTemplate,
-    DEFAULT_PROMPTS,
+    DEFAULT_PROMPTS
 )
 from redblackbench.game.scoring import Choice
 

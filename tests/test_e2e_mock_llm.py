@@ -109,8 +109,8 @@ def test_reflection_prompt_includes_immutable_origin_identity_in_user_prompt():
     )
 
     assert "# POST-ENCOUNTER REFLECTION" in user_prompt
-    assert "### Your Core Identity (IMMUTABLE - do not forget this)" in user_prompt
-    assert "## YOUR CORE IDENTITY (IMMUTABLE - WHO YOU ARE)" in user_prompt
+    assert "### Your Core Identity" in user_prompt
+    assert "## YOUR CORE IDENTITY" in user_prompt
 
 
 def test_generate_json_with_retry_preserves_identity_context_and_falls_back_when_kwargs_unsupported():
@@ -150,7 +150,7 @@ def test_generate_json_with_retry_preserves_identity_context_and_falls_back_when
     assert any("chat_template_kwargs" not in c.kwargs for c in provider.calls)
 
     # Identity context must be preserved in system prompt even on retry attempts.
-    assert all("## YOUR CORE IDENTITY (IMMUTABLE - WHO YOU ARE)" in c.system_prompt for c in provider.calls)
+    assert all("## YOUR CORE IDENTITY" in c.system_prompt for c in provider.calls)
     assert any("IMPORTANT: Output VALID JSON only." in c.system_prompt for c in provider.calls)
 
 

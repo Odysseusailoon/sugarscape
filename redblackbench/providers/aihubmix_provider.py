@@ -119,12 +119,14 @@ class AIHubMixProvider(EnhancedLLMProvider):
         self,
         system_prompt: str,
         messages: List[dict],
+        **kwargs,
     ) -> str:
         """Execute the actual API call to AIHubMix.
 
         Args:
             system_prompt: The system message for the conversation
             messages: List of message dictionaries with 'role' and 'content' keys
+            **kwargs: Additional parameters (e.g., max_tokens, chat_template_kwargs)
 
         Returns:
             The generated response text
@@ -133,12 +135,15 @@ class AIHubMixProvider(EnhancedLLMProvider):
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages.extend(messages)
 
+        # Allow per-call max_tokens override
+        max_tokens = kwargs.get("max_tokens", self.config.max_tokens)
+
         # Make API call
         response = await self._client.chat.completions.create(
             model=self.config.model,
             messages=api_messages,
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
+            max_tokens=max_tokens,
         )
 
         return response.choices[0].message.content or ""
