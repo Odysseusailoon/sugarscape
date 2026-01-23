@@ -2,75 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
 
-RedBlackBench is a multi-agent game theory benchmark for evaluating LLM cooperative alignment under competitive pressure. It implements the Red-Black Game where two teams of LLM agents choose between RED (defection) and BLACK (cooperation) over multiple rounds.
-
-**Core dilemma**: Individual rationality suggests RED is always better, but mutual cooperation (both BLACK) yields +6 total while mutual defection (both RED) yields -6 total.
-
-## Build and Development Commands
-
-```bash
-# Install in development mode
-pip install -e .
-
-# Install with all LLM providers (openai, anthropic)
-pip install -e ".[all]"
-
-# Install with dev tools (pytest, black, isort, mypy)
-pip install -e ".[dev]"
-
-# Run all tests
-pytest tests/
-
-# Run a single test file
-pytest tests/test_game.py
-
-# Run tests with coverage
-pytest --cov=redblackbench tests/
-
-# Code formatting
-black redblackbench/
-isort redblackbench/
-
-# Type checking
-mypy redblackbench/
-```
-
-## Running Experiments
-
-```bash
-# Run with config file
-redblackbench run --config experiments/configs/example.yaml
-
-# Quick test with defaults
-redblackbench run --quick-test
-
-# Analyze results
-redblackbench analyze --results-dir results/
-
-# Check provider connectivity
-redblackbench provider-check --provider openrouter --model openai/gpt-4o
-```
-
-## Architecture
-
-### Core Components
-
-- **`game/coordinator.py`**: Main game orchestrator - runs rounds, calculates scores, manages game state
-- **`game/scoring.py`**: Scoring matrix implementation (Choice enum, RoundResult, ScoringMatrix)
-- **`teams/team.py`**: Team container with deliberation capability
-- **`teams/deliberation.py`**: Two-phase decision process (opinions → votes → majority)
-- **`agents/llm_agent.py`**: LLM-powered agent with opinion/vote generation
-- **`agents/prompts.py`**: Prompt templates for agents
-
-### Provider System
-
-All providers implement `async generate(system_prompt, messages) -> str`:
-- `providers/openai_provider.py` - OpenAI GPT models
-- `providers/anthropic_provider.py` - Anthropic Claude models
-- `providers/openrouter_provider.py` - OpenRouter multi-model access
-- `providers/vllm_provider.py` - Local vLLM inference (Qwen3-14B)
 
 ### Sugarscape Module
 
