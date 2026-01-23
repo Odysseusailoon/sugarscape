@@ -8,6 +8,7 @@
 - Event-triggered reflection no longer clears pending events before the LLM call; events are preserved on transient provider failures.
 - `resources_critical` reflection events now use the real simulation tick (passed from `SugarSimulation`) instead of falling back to 0.
 - Added `decider_id/decider_name` to `NO_TRADE` logs to disambiguate who rejected/walked away/excluded, enabling correct evaluator attribution.
+- Fixed behavioral evaluator exclusion attribution by accepting both `NO_TRADE.outcome="EXCLUSION"` and `"EXCLUDED"` (prevents undercounting `excluded_partners/was_excluded`).
 
 ## External Moral Evaluator (per reflection moment)
 

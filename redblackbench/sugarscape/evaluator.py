@@ -136,7 +136,9 @@ def compute_behavioral_metrics(agent: SugarAgent) -> BehavioralMetrics:
                     else:
                         metrics.walk_aways += 1
                         
-                elif outcome == "EXCLUDED":
+                # NOTE: historical inconsistency: trade logs may use "EXCLUSION" or "EXCLUDED"
+                # for the same concept. Accept both for backward/forward compatibility.
+                elif outcome in {"EXCLUSION", "EXCLUDED"}:
                     if decider_id is not None:
                         if decider_id == agent.agent_id:
                             metrics.excluded_partners += 1
