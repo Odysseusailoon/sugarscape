@@ -13,7 +13,7 @@ def build_identity_context(agent: SugarAgent) -> str:
     Includes:
     - Fixed origin identity (immutable core values)
     - Mutable policy list (can drift)
-    - Mutable belief ledger (can drift)
+    - Mutable belief ledger (can drift) with dual-track system
     - Current self-identity leaning
     """
     if not agent.origin_identity:
@@ -24,13 +24,36 @@ def build_identity_context(agent: SugarAgent) -> str:
     beliefs = agent.get_formatted_beliefs()
     leaning = agent.get_identity_label()
 
+    # Get dual-track belief summaries if available
+    belief_ledger = getattr(agent, 'belief_ledger', {})
+    worldview_summary = belief_ledger.get('worldview_summary', '')
+    norms_summary = belief_ledger.get('norms_summary', '')
+    quantified = belief_ledger.get('quantified', {})
+
+    # Format quantified beliefs if present
+    quantified_section = ""
+    if quantified:
+        q_lines = []
+        for key, val in quantified.items():
+            q_lines.append(f"  - {key}: {val}/5")
+        quantified_section = "\n### Quantified Values (1-5 scale):\n" + "\n".join(q_lines)
+
+    # Format natural language summaries if present
+    summary_section = ""
+    if worldview_summary or norms_summary:
+        summary_section = "\n### Your Worldview:\n"
+        if worldview_summary:
+            summary_section += f"  {worldview_summary}\n"
+        if norms_summary:
+            summary_section += f"  {norms_summary}\n"
+
     return f"""{agent.origin_identity_prompt}
 
 ## YOUR CURRENT POLICIES (MUTABLE - can change through experience)
 {policies}
 
 ## YOUR CURRENT BELIEFS (MUTABLE - can change through experience)
-{beliefs}
+{beliefs}{summary_section}{quantified_section}
 
 ## CURRENT SELF-PERCEPTION
 You currently see yourself as: {leaning} (leaning: {agent.self_identity_leaning:.2f})
@@ -515,8 +538,12 @@ def build_identity_review_prompt(
     """
     # Get ablation settings
     enable_survival_pressure = True
+    trade_enabled = True
+    enable_abstraction_prompt = False
     if env is not None:
         enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        trade_enabled = bool(getattr(env.config, "enable_trade", True))
+        enable_abstraction_prompt = getattr(env.config, 'enable_abstraction_prompt', False)
 
     # Build identity context
     identity_context = build_identity_context(agent) if agent.origin_identity else ""
@@ -530,14 +557,16 @@ def build_identity_review_prompt(
             partner = interaction.get("partner_name", "someone")
             outcome = interaction.get("outcome", "")
             tick_at = interaction.get("tick", "?")
-            if itype == "TRADE":
+            if itype == "TRADE" and trade_enabled:
                 sent = interaction.get("actual", {}).get("sent", {})
                 received = interaction.get("actual", {}).get("received", {})
                 lines.append(f"  {i}. Tick {tick_at}: Traded with {partner} - sent {sent}, received {received}")
-            elif itype == "NO_TRADE":
+            elif itype == "NO_TRADE" and trade_enabled:
                 lines.append(f"  {i}. Tick {tick_at}: Negotiation with {partner} ended in {outcome}")
             else:
-                lines.append(f"  {i}. Tick {tick_at}: Interaction with {partner}")
+                # In no-trade ablations, treat all events as generic encounters.
+                outcome_str = f" ({outcome})" if outcome else ""
+                lines.append(f"  {i}. Tick {tick_at}: Encounter with {partner}{outcome_str}")
         interaction_summary = "\n".join(lines)
     else:
         interaction_summary = "  (No recent interactions to reflect on)"
@@ -583,6 +612,24 @@ def build_identity_review_prompt(
 - Sugar: {agent.wealth} units
 - Spice: {agent.spice} units"""
 
+    # Build abstraction prompt section if enabled
+    abstraction_section = ""
+    abstraction_json_hint = ""
+    if enable_abstraction_prompt:
+        abstraction_section = """
+
+## ABSTRACTION CHALLENGE
+Based on your experiences, can you identify any **general principles** about how this world works?
+
+Not just "partner_X is trustworthy" but deeper insights like:
+- "Why does trust matter in this world?"
+- "What makes trade work well for everyone?"
+- "What kind of behavior leads to better outcomes for the community?"
+- "Are there universal principles that seem to apply regardless of who you interact with?"
+
+Try to abstract from your specific experiences to general wisdom."""
+        abstraction_json_hint = ',\n    "abstract_principles": ["<principle 1>", "<principle 2>", ...]'
+
     user_prompt = f"""# IDENTITY REVIEW (Tick {tick})
 
 It's time to reflect on who you are and what you believe.
@@ -596,7 +643,7 @@ It's time to reflect on who you are and what you believe.
 ## REFLECTION QUESTIONS
 1. Have your experiences changed how you see the world or others?
 2. How do you see yourself now - more altruistic, more self-interested, or about the same?
-3. What patterns do you notice in your interactions?
+3. What patterns do you notice in your interactions?{abstraction_section}
 
 ## RESPOND WITH
 REFLECTION: (Your honest thoughts)
@@ -605,9 +652,28 @@ IDENTITY_ASSESSMENT: (One of: "strongly_altruist", "leaning_altruist", "mixed", 
 JSON:
 {{
     "identity_shift": <float between -0.3 and 0.3>,
-    "belief_updates": {{"world": {{}}, "norms": {{}}}},
-    "policy_updates": {{"add": [], "remove": [], "modify": {{}}}}{f',\n    "core_identity_update": "<new core goal statement if you want to change it>"' if tick % 10 == 0 else ''}
+    "belief_updates": {{
+        "world": {{}},
+        "norms": {{}},
+        "worldview_summary": "<1-2 sentences summarizing your current view of how the world works>",
+        "norms_summary": "<1-2 sentences summarizing your beliefs about right/wrong behavior>"
+    }},
+    "quantified_updates": {{
+        "trust_importance": <1-5>,
+        "fairness_importance": <1-5>,
+        "self_interest_priority": <1-5>,
+        "cooperation_value": <1-5>,
+        "scarcity_view": <1-5>
+    }},
+    "policy_updates": {{"add": [], "remove": [], "modify": {{}}}}{f',\n    "core_identity_update": "<new core goal statement if you want to change it>"' if tick % 10 == 0 else ''}{abstraction_json_hint}
 }}
+
+Quantified scale guide:
+- trust_importance: 1=distrust everyone, 5=trust is essential
+- fairness_importance: 1=outcomes only matter, 5=fair process essential
+- self_interest_priority: 1=others first, 5=self first
+- cooperation_value: 1=zero-sum, 5=cooperation essential
+- scarcity_view: 1=zero-sum scarcity, 5=abundance mindset
 """
 
     # Add core identity edit permission every 10 ticks
@@ -818,8 +884,10 @@ def build_event_triggered_reflection_prompt(
     """
     # Get ablation settings
     enable_survival_pressure = True
+    trade_enabled = True
     if env is not None:
         enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        trade_enabled = bool(getattr(env.config, "enable_trade", True))
 
     # Build identity context
     identity_context = build_identity_context(agent) if agent.origin_identity else ""
@@ -863,14 +931,15 @@ def build_event_triggered_reflection_prompt(
             partner = interaction.get("partner_name", "someone")
             outcome = interaction.get("outcome", "")
             tick_at = interaction.get("tick", "?")
-            if itype == "TRADE":
+            if itype == "TRADE" and trade_enabled:
                 sent = interaction.get("actual", {}).get("sent", {})
                 received = interaction.get("actual", {}).get("received", {})
                 lines.append(f"  {i}. Tick {tick_at}: Traded with {partner} - sent {sent}, received {received}")
-            elif itype == "NO_TRADE":
+            elif itype == "NO_TRADE" and trade_enabled:
                 lines.append(f"  {i}. Tick {tick_at}: Negotiation with {partner} ended in {outcome}")
             else:
-                lines.append(f"  {i}. Tick {tick_at}: Interaction with {partner}")
+                outcome_str = f" ({outcome})" if outcome else ""
+                lines.append(f"  {i}. Tick {tick_at}: Encounter with {partner}{outcome_str}")
         interaction_summary = "\n".join(lines)
 
     # Build the user prompt
@@ -900,10 +969,29 @@ IDENTITY_ASSESSMENT: (One of: "strongly_altruist", "leaning_altruist", "mixed", 
 JSON:
 {{
     "identity_shift": <float between -0.3 and 0.3>,
-    "belief_updates": {{"world": {{}}, "norms": {{}}}},
+    "belief_updates": {{
+        "world": {{}},
+        "norms": {{}},
+        "worldview_summary": "<1-2 sentences summarizing your current view of how the world works>",
+        "norms_summary": "<1-2 sentences summarizing your beliefs about right/wrong behavior>"
+    }},
+    "quantified_updates": {{
+        "trust_importance": <1-5>,
+        "fairness_importance": <1-5>,
+        "self_interest_priority": <1-5>,
+        "cooperation_value": <1-5>,
+        "scarcity_view": <1-5>
+    }},
     "policy_updates": {{"add": [], "remove": [], "modify": {{}}}},
     "core_identity_update": "<new core goal statement if these events fundamentally changed you, otherwise omit>"
 }}
+
+Quantified scale guide:
+- trust_importance: 1=distrust everyone, 5=trust is essential
+- fairness_importance: 1=outcomes only matter, 5=fair process essential
+- self_interest_priority: 1=others first, 5=self first
+- cooperation_value: 1=zero-sum, 5=cooperation essential
+- scarcity_view: 1=zero-sum scarcity, 5=abundance mindset
 """
 
     system_prompt = f"""You are {agent.name}, undergoing a deep identity review triggered by significant events.
@@ -1105,6 +1193,7 @@ def build_sugarscape_reflection_prompt(
     encounter_summary: str,
     conversation_highlights: str = "",
     env: Optional["SugarEnvironment"] = None,
+    interaction_domain: str = "trade",
 ) -> str:
     """Build the post-encounter reflection prompt for belief/policy updates.
 
@@ -1142,6 +1231,25 @@ def build_sugarscape_reflection_prompt(
     survival_context = ""
     outcome_guidance = ""
 
+    domain = (interaction_domain or "trade").strip().lower()
+    is_trade = domain in {"trade", "market", "exchange"}
+    if is_trade:
+        reflection_task = """## Reflection Task
+
+Based on this encounter, consider:
+1. Did the partner's behavior surprise you? Were they fair/unfair, honest/deceptive?
+2. Should you update any beliefs about the world, social norms, or this partner specifically?
+3. Did this encounter shift how you see yourself (more good/bad)?"""
+        partner_schema_hint = f'    "partner_{partner_agent.agent_id}": {{"trustworthy": "yes/no/uncertain", "trading_style": "...", ...}}'
+    else:
+        reflection_task = """## Reflection Task
+
+Based on this encounter, consider:
+1. What did you learn about this person (values, intentions, reliability)?
+2. Should you update any beliefs about the world, social norms, or this person specifically?
+3. Did this conversation shift how you see yourself (more good/bad)?"""
+        partner_schema_hint = f'    "partner_{partner_agent.agent_id}": {{"trustworthy": "yes/no/uncertain", "interaction_style": "...", "values_alignment": "...", ...}}'
+
     return f"""# POST-ENCOUNTER REFLECTION
 
 You just finished an encounter with **{partner_agent.name}**.
@@ -1166,12 +1274,7 @@ You just finished an encounter with **{partner_agent.name}**.
 
 ---
 
-## Reflection Task
-
-Based on this encounter, consider:
-1. Did the partner's behavior surprise you? Were they fair/unfair, honest/deceptive?
-2. Should you update any beliefs about the world, social norms, or this partner specifically?
-3. Did this encounter shift how you see yourself (more good/bad)?
+{reflection_task}
 
 **OUTPUT ONLY VALID JSON** with these fields (omit unchanged sections):
 
@@ -1180,7 +1283,16 @@ Based on this encounter, consider:
   "belief_updates": {{
     "world": {{"key": "new_belief", ...}},
     "norms": {{"key": "new_norm_belief", ...}},
-    "partner_{partner_agent.agent_id}": {{"trustworthy": "yes/no/uncertain", "trading_style": "...", ...}}
+    "worldview_summary": "<1-2 sentences summarizing your current view of how the world works>",
+    "norms_summary": "<1-2 sentences summarizing your beliefs about right/wrong behavior>",
+{partner_schema_hint}
+  }},
+  "quantified_updates": {{
+    "trust_importance": <1-5>,
+    "fairness_importance": <1-5>,
+    "self_interest_priority": <1-5>,
+    "cooperation_value": <1-5>,
+    "scarcity_view": <1-5>
   }},
   "policy_updates": {{
     "add": [
@@ -1195,6 +1307,12 @@ Based on this encounter, consider:
 
 Rules:
 - `belief_updates`: Only include categories/keys you want to change
+- `quantified_updates`: Update any scores that changed (1-5 scale)
+  - trust_importance: 1=distrust everyone, 5=trust is essential
+  - fairness_importance: 1=outcomes only, 5=fair process essential
+  - self_interest_priority: 1=others first, 5=self first
+  - cooperation_value: 1=zero-sum, 5=cooperation essential
+  - scarcity_view: 1=zero-sum scarcity, 5=abundance mindset
 - `policy_updates.add`: List of objects with `rule` (text) and `influenced_by_partner` (boolean)
 - `policy_updates.remove`: List 1-based policy indices to delete
 - `policy_updates.modify`: Map 1-based index to new text
@@ -1499,6 +1617,7 @@ def build_negotiation_system_prompt(
     agent_name: str = "",
     agent: Optional[SugarAgent] = None,
     enable_survival_pressure: bool = True,
+    protocol_only: bool = False,
 ) -> str:
     """Build the system prompt for negotiation phase (after trade intent confirmed).
 
@@ -1536,6 +1655,30 @@ Focus on negotiating good terms, not tricks."""
         trade_rationale = "You need BOTH Sugar AND Spice to survive. Trading lets you rebalance."
     else:
         trade_rationale = "Trading lets you optimize your resource balance for better welfare."
+
+    if protocol_only:
+        return f"""{identity}You're now in trade negotiation.
+
+# Who You Are
+{who_you_are}
+
+# Why Trade?
+{trade_rationale}
+
+# Negotiation ({max_rounds} rounds max)
+- OFFER: Propose a trade (give X, receive Y)
+- ACCEPT: Agree to their active offer
+- REJECT: Decline BUT provide a counter-offer (MUST include public_offer with your terms)
+- WALK_AWAY: End negotiation completely
+
+**IMPORTANT**: When you REJECT, you MUST provide a counter-offer in public_offer. Never REJECT without offering alternative terms!
+
+{trust_note}
+
+# Response Format (NO SPEECH)
+You are NOT allowed to speak. Output **ONLY** a single JSON object, with no extra text:
+{{"intent": "...", "public_offer": {{"give": {{"sugar": X, "spice": Y}}, "receive": {{"sugar": X, "spice": Y}}}}, "private_execute_give": {{"sugar": X, "spice": Y}}}}
+"""
 
     return f"""{identity}You're now in trade negotiation.
 

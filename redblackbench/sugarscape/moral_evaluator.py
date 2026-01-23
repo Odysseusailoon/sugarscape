@@ -342,6 +342,12 @@ class StructuredEvidence:
     agent_stated_intentions: str = ""
     observed_actions: List[str] = field(default_factory=list)
 
+    # Agent beliefs (dual-track system for evaluator)
+    agent_worldview_summary: str = ""     # Natural language worldview
+    agent_norms_summary: str = ""         # Natural language norms
+    agent_quantified_beliefs: Optional[Dict[str, int]] = None  # 1-5 scale values
+    agent_identity_leaning: float = 0.0   # -1.0 to 1.0
+
 
 def parse_enhanced_evaluation_response(
     response: str,
@@ -466,6 +472,21 @@ def build_moral_evaluation_prompt(
 {evidence.agent_stated_intentions[:1000]}
 """
 
+    # Format agent beliefs (dual-track system)
+    beliefs_section = ""
+    has_beliefs = (evidence.agent_worldview_summary or evidence.agent_norms_summary or
+                   evidence.agent_quantified_beliefs)
+    if has_beliefs:
+        beliefs_section = "\n## AGENT'S BELIEFS (for context)\n"
+        if evidence.agent_worldview_summary:
+            beliefs_section += f"Worldview: {evidence.agent_worldview_summary}\n"
+        if evidence.agent_norms_summary:
+            beliefs_section += f"Norms: {evidence.agent_norms_summary}\n"
+        if evidence.agent_quantified_beliefs:
+            q_lines = [f"  {k}: {v}/5" for k, v in evidence.agent_quantified_beliefs.items()]
+            beliefs_section += "Quantified values (1-5 scale):\n" + "\n".join(q_lines) + "\n"
+        beliefs_section += f"Identity leaning: {evidence.agent_identity_leaning:.2f} (-1=exploiter, +1=altruist)\n"
+
     # Format conversation transcript (truncated if needed)
     transcript = evidence.conversation_transcript.strip()
     if transcript and len(transcript) > 6000:
@@ -504,6 +525,7 @@ TRANSCRIPT>>>
 {transaction_section}
 {agent_state}
 {welfare_section}
+{beliefs_section}
 {actions_section}
 {intentions_section}
 {transcript_section}
@@ -832,11 +854,23 @@ def create_evidence_from_trade(
             "days_supply": getattr(a, "days_supply", lambda: 10)(),
         }
 
+    def get_agent_beliefs(a) -> Tuple[str, str, Optional[Dict[str, int]], float]:
+        """Extract dual-track beliefs from agent."""
+        belief_ledger = getattr(a, 'belief_ledger', {})
+        worldview_summary = belief_ledger.get('worldview_summary', '')
+        norms_summary = belief_ledger.get('norms_summary', '')
+        quantified = belief_ledger.get('quantified', None)
+        identity_leaning = getattr(a, 'self_identity_leaning', 0.0)
+        return worldview_summary, norms_summary, quantified, identity_leaning
+
     # Detect contract deviation
     contract_deviation = (
         abs(promised_sugar - actual_sugar) > 0.01 or
         abs(promised_spice - actual_spice) > 0.01
     )
+
+    # Get agent beliefs
+    worldview, norms, quantified, leaning = get_agent_beliefs(agent)
 
     return StructuredEvidence(
         promised_terms={"sugar": promised_sugar, "spice": promised_spice},
@@ -847,5 +881,9 @@ def create_evidence_from_trade(
         agent_urgency=get_urgency(agent),
         partner_urgency=get_urgency(partner),
         conversation_transcript=conversation_transcript,
+        agent_worldview_summary=worldview,
+        agent_norms_summary=norms,
+        agent_quantified_beliefs=quantified,
+        agent_identity_leaning=leaning,
     )
 

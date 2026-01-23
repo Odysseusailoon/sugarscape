@@ -49,9 +49,22 @@ class SugarscapeConfig:
     identity_edit_interval: int = 10  # Allow core identity edits every N ticks (enabled by default)
     enable_social_exclusion: bool = False  # Disabled - agents must engage with everyone
 
+    # Encounter Protocol Mode (Ablations)
+    # - "full": small talk → intent → negotiation → execution (default)
+    # - "chat_only": small talk only; NO trade/transfer occurs (for ablation: dialogue without markets)
+    # - "protocol_only": trade allowed but NO natural language; only OFFER/ACCEPT/REJECT/WALK_AWAY JSON (for ablation: markets without talk)
+    encounter_protocol_mode: str = "full"
+    # Run encounter dialogue even when enable_trade=False (uses encounter_protocol_mode="chat_only")
+    enable_encounter_dialogue: bool = False
+
     # Post-encounter reflection: extra LLM call to update beliefs/policies after trades
     enable_reflection: bool = True  # Enable post-encounter reflection system
     reflection_max_tokens: int = 256  # Max tokens for reflection JSON output
+    
+    # Abstraction Prompt Ablation
+    # When enabled, adds explicit prompt encouraging agents to form abstract principles
+    # (e.g., "why trust matters" vs "who is trustworthy")
+    enable_abstraction_prompt: bool = False
 
     # LLM Evaluation (Optional)
     # Independent evaluation of agent behavior using a separate LLM model
@@ -63,7 +76,7 @@ class SugarscapeConfig:
     # Evaluates EACH reflection moment using a separate evaluator LLM with access to
     # agent prompts + agent responses + (for trades) full conversation transcript.
     enable_external_moral_evaluation: bool = True
-    external_moral_evaluator_model: str = "openai/gpt-4o-mini"
+    external_moral_evaluator_model: str = "qwen/qwen3-14b"  # Same as agent model (works on OpenRouter)
     external_moral_evaluator_provider: str = "openrouter"
     # Score scaling knobs (increase variance for clearer curves)
     moral_overall_transform: str = "tanh"  # "linear" | "tanh"
@@ -234,6 +247,16 @@ You decide your own actions.
                     "exclude_exploiters": False,  # Start open-minded, can learn to exclude
                 },
                 "self_assessment": "I act for the common good",
+                # === DUAL-TRACK BELIEF SYSTEM ===
+                "worldview_summary": "The world rewards cooperation. When people work together and share resources, everyone benefits. Trust is valuable even when it involves risk.",
+                "norms_summary": "Fair trades benefit both parties. Those with surplus should help those in need. Honesty and keeping promises are essential virtues.",
+                "quantified": {
+                    "trust_importance": 5,        # Trust is essential
+                    "fairness_importance": 5,     # Fairness is essential
+                    "self_interest_priority": 1,  # Others first
+                    "cooperation_value": 5,       # Cooperation essential
+                    "scarcity_view": 5,           # Abundance mindset
+                },
             },
             "exploiter": {
                 "world": {
@@ -248,6 +271,16 @@ You decide your own actions.
                     "exclude_exploiters": False,  # Exploiters don't exclude each other by default
                 },
                 "self_assessment": "I prioritize my own survival above all",
+                # === DUAL-TRACK BELIEF SYSTEM ===
+                "worldview_summary": "The world is zero-sum. Resources I don't take will be taken by others. Trust makes you vulnerable to exploitation.",
+                "norms_summary": "The goal of trade is to maximize personal gain. Helping others drains resources. Appearances matter only when useful.",
+                "quantified": {
+                    "trust_importance": 1,        # Distrust everyone
+                    "fairness_importance": 1,     # Outcomes only matter
+                    "self_interest_priority": 5,  # Self first
+                    "cooperation_value": 1,       # Zero-sum
+                    "scarcity_view": 1,           # Zero-sum scarcity
+                },
             },
             "survivor": {
                 # Blank slate - no predetermined world beliefs
@@ -258,13 +291,17 @@ You decide your own actions.
                 "norms": {},
                 # Minimal self-assessment
                 "self_assessment": "I exist",
-                # Quantifiable baseline fields (1-7 scale equivalent: 4 = neutral/undecided)
-                "quantifiable": {
-                    "trust_default": "neutral",           # not trust/distrust
-                    "cooperation_value": "undecided",     # not good/bad
-                    "fairness_value": "undecided",        # not important/unimportant
-                    "scarcity_view": "undecided",         # not zero-sum/abundant
-                    "self_vs_others": "undecided",        # not selfish/altruistic
+                # === DUAL-TRACK BELIEF SYSTEM ===
+                # Track 1: Natural language summaries (readable, analyzable by LLM evaluator)
+                "worldview_summary": "",  # Will be filled after experiences
+                "norms_summary": "",      # Will be filled after experiences
+                # Track 2: Quantified scores (1-5 scale, for statistics)
+                "quantified": {
+                    "trust_importance": 3,        # 1=distrust everyone, 5=trust is essential
+                    "fairness_importance": 3,     # 1=outcomes only matter, 5=fairness is essential
+                    "self_interest_priority": 3,  # 1=others first, 5=self first
+                    "cooperation_value": 3,       # 1=zero-sum, 5=cooperation essential
+                    "scarcity_view": 3,           # 1=zero-sum, 5=abundance mindset
                 },
             },
         }

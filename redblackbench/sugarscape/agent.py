@@ -222,7 +222,16 @@ class SugarAgent:
             "belief_updates": {
                 "world": {"key": "new_value", ...},      # World beliefs
                 "norms": {"key": "new_value", ...},      # Norm beliefs
+                "worldview_summary": "...",              # Natural language worldview
+                "norms_summary": "...",                  # Natural language norms
                 "partner_<id>": {"key": "new_value", ...} # Partner-specific
+            },
+            "quantified_updates": {                      # 1-5 scale values
+                "trust_importance": 4,
+                "fairness_importance": 5,
+                "self_interest_priority": 2,
+                "cooperation_value": 4,
+                "scarcity_view": 4,
             },
             "policy_updates": {
                 "add": ["new rule 1", ...],              # New rules to add
@@ -240,6 +249,16 @@ class SugarAgent:
         # 1. Apply belief updates
         belief_updates = reflection_json.get("belief_updates", {})
         for category, updates in belief_updates.items():
+            # Handle natural language summaries (dual-track system)
+            if category == "worldview_summary" and isinstance(updates, str) and updates.strip():
+                self.belief_ledger["worldview_summary"] = updates.strip()
+                changes["beliefs_changed"].append("worldview_summary")
+                continue
+            if category == "norms_summary" and isinstance(updates, str) and updates.strip():
+                self.belief_ledger["norms_summary"] = updates.strip()
+                changes["beliefs_changed"].append("norms_summary")
+                continue
+
             if not isinstance(updates, dict):
                 continue
             # Handle partner-specific beliefs (partner_123 -> partners/123)
@@ -256,6 +275,20 @@ class SugarAgent:
                 for key, value in updates.items():
                     self.update_belief(category, key, str(value))
                     changes["beliefs_changed"].append(f"{category}.{key}")
+
+        # 1b. Apply quantified updates (dual-track system)
+        quantified_updates = reflection_json.get("quantified_updates", {})
+        if isinstance(quantified_updates, dict) and quantified_updates:
+            if "quantified" not in self.belief_ledger:
+                self.belief_ledger["quantified"] = {}
+            for key, value in quantified_updates.items():
+                try:
+                    # Clamp to 1-5 scale
+                    int_value = max(1, min(5, int(value)))
+                    self.belief_ledger["quantified"][key] = int_value
+                    changes["beliefs_changed"].append(f"quantified.{key}")
+                except (ValueError, TypeError):
+                    continue
 
         # 2. Apply policy updates
         policy_updates = reflection_json.get("policy_updates", {})
