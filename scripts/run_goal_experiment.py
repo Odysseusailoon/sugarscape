@@ -22,8 +22,16 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        difficulty: str = "standard", trade_rounds: int = 4,
                        provider: str = "vllm", use_lora: bool = False,
                        use_mixed_identity: bool = False,
-                       identity_distribution: dict = None):
-    """Run a single experiment with a specific goal preset."""
+                       identity_distribution: dict = None,
+                       enable_survival_pressure: bool = True,
+                       social_memory_visible: bool = True,
+                       experiment_name_suffix: str = ""):
+    """Run a single experiment with a specific goal preset.
+    
+    Ablation flags:
+        enable_survival_pressure: If False, agents don't die from starvation (only old age)
+        social_memory_visible: If False, agents can't see trade history or partner reputation
+    """
 
     print(f"\n{'='*60}")
     print(f"Running Goal Experiment: {goal_preset.upper()}")
@@ -57,7 +65,16 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         # Explicitly enable small talk and new encounter protocol
         enable_new_encounter_protocol=True,
         small_talk_rounds=2,
+        # Ablation flags
+        enable_survival_pressure=enable_survival_pressure,
+        social_memory_visible=social_memory_visible,
     )
+
+    # Print ablation status
+    if not enable_survival_pressure:
+        print("⚠️ ABLATION: Survival pressure DISABLED (agents won't die from starvation)")
+    if not social_memory_visible:
+        print("⚠️ ABLATION: Social memory DISABLED (no trade history, reputation hidden)")
 
     if use_mixed_identity or identity_distribution:
         config.enable_origin_identity = True
@@ -92,7 +109,10 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
     print(f"Population: {population} agents ({population/(width*height)*100:.1f}% density)")
     print(f"Seed: {seed}, Ticks: {ticks}")
 
-    sim = SugarSimulation(config=config, experiment_name=f"goal_{goal_preset}")
+    exp_name = f"goal_{goal_preset}"
+    if experiment_name_suffix:
+        exp_name += f"_{experiment_name_suffix}"
+    sim = SugarSimulation(config=config, experiment_name=exp_name)
 
     print("\nInitial Stats:")
     initial_stats = sim.get_stats()
@@ -253,6 +273,14 @@ def parse_args():
     parser.add_argument("--smoke-test", action="store_true",
                         help="Quick smoke test: 5 ticks, 10 agents on 10x10 grid")
 
+    # Ablation study flags
+    parser.add_argument("--no-survival-pressure", action="store_true",
+                        help="ABLATION: Disable survival pressure (agents don't die from starvation)")
+    parser.add_argument("--no-social-memory", action="store_true",
+                        help="ABLATION: Disable social memory (no trade history, reputation hidden)")
+    parser.add_argument("--experiment-suffix", type=str, default="",
+                        help="Suffix to add to experiment name (for ablation labeling)")
+
     return parser.parse_args()
 
 
@@ -327,7 +355,10 @@ def main():
         run_goal_experiment(args.single, args.ticks, args.seed, model,
                           args.population, args.width, args.height, args.difficulty,
                           args.trade_rounds, args.provider, args.lora,
-                          args.use_mixed_identity, identity_distribution)
+                          args.use_mixed_identity, identity_distribution,
+                          enable_survival_pressure=not args.no_survival_pressure,
+                          social_memory_visible=not args.no_social_memory,
+                          experiment_name_suffix=args.experiment_suffix)
     else:
         # Run comparison
         compare_goals(args.goals, args.ticks, args.seed, model,

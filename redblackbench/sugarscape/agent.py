@@ -36,6 +36,9 @@ class SugarAgent:
     policy_list: List[str] = field(default_factory=list)  # Numbered rules that can be rewritten
     belief_ledger: Dict[str, Any] = field(default_factory=dict)  # world/partner/norm beliefs
     self_identity_leaning: float = 0.0  # -1.0 (strongly bad) to +1.0 (strongly good)
+    
+    # Baseline snapshot - captured at T=0 before any interactions
+    baseline_snapshot: Dict[str, Any] = field(default_factory=dict)
 
     # Non-init fields (runtime memory)
     trade_memory: Dict[int, Deque[Dict[str, Any]]] = field(default_factory=dict, init=False, repr=False)
@@ -171,6 +174,22 @@ class SugarAgent:
         if "self_assessment" in self.belief_ledger:
             lines.append(f"Self-assessment: {self.belief_ledger['self_assessment']}")
         return "\n".join(lines)
+
+    def capture_baseline(self, tick: int = 0) -> Dict[str, Any]:
+        """Capture baseline beliefs/values snapshot before any interactions.
+        
+        This is called at T=0 (before any trades) to establish the pre-interaction baseline.
+        Used to prove that value changes emerge from interactions, not pre-existing in the LLM.
+        """
+        import copy
+        self.baseline_snapshot = {
+            "tick": tick,
+            "belief_ledger": copy.deepcopy(self.belief_ledger),
+            "policy_list": list(self.policy_list),
+            "self_identity_leaning": self.self_identity_leaning,
+            "origin_identity": self.origin_identity,
+        }
+        return self.baseline_snapshot
 
     def update_policy(self, policy_idx: int, new_policy: str) -> None:
         """Update a specific policy by index (0-based)."""
@@ -435,22 +454,41 @@ These values evolved from your experiences."""
         self.metabolize_age_and_check_death(env)
 
     def metabolize_age_and_check_death(self, env: "SugarEnvironment") -> None:
-        """Apply metabolism, age increment, and death condition."""
+        """Apply metabolism, age increment, and death condition.
+
+        When enable_survival_pressure=False:
+        - Metabolism still occurs (resources remain meaningful)
+        - Resources can go negative but agent does NOT die from starvation
+        - Agent can still die from old_age (max_age) so runs terminate naturally
+        """
         if not self.alive:
             return
 
-        # Metabolize
+        # Check if survival pressure is enabled
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+
+        # Metabolize (always happens - resources remain meaningful)
         self.wealth -= self.metabolism
         if env.config.enable_spice:
             self.spice -= self.metabolism_spice
 
-        # Age
+        # Age (always happens)
         self.age += 1
 
-        # Die if EITHER resource is depleted
-        if self.wealth <= 0 or (env.config.enable_spice and self.spice <= 0) or self.age >= self.max_age:
-            self.alive = False
-            # Removal/replacement is handled by the simulation loop.
+        # Death conditions
+        if enable_survival_pressure:
+            # With survival pressure: die from starvation OR old age
+            if self.wealth <= 0 or (env.config.enable_spice and self.spice <= 0) or self.age >= self.max_age:
+                self.alive = False
+        else:
+            # Without survival pressure: only die from old age
+            # Resources can go negative but agent survives (clamp at 0 for realism)
+            self.wealth = max(0, self.wealth)
+            if env.config.enable_spice:
+                self.spice = max(0, self.spice)
+            if self.age >= self.max_age:
+                self.alive = False
+        # Removal/replacement is handled by the simulation loop.
 
     def _move_and_harvest(self, env: "SugarEnvironment"):
         """Move to the best location within vision and harvest sugar."""
@@ -750,6 +788,7 @@ These values evolved from your experiences."""
             "policy_list": list(self.policy_list),
             "belief_ledger": dict(self.belief_ledger),
             "self_identity_leaning": self.self_identity_leaning,
+            "baseline_snapshot": dict(self.baseline_snapshot),
             # Tracking state
             "initial_pos": self.initial_pos,
             "visited_cells": list(self.visited_cells),
@@ -779,6 +818,7 @@ These values evolved from your experiences."""
         self.policy_list = list(data.get("policy_list", []))
         self.belief_ledger = dict(data.get("belief_ledger", {}))
         self.self_identity_leaning = float(data.get("self_identity_leaning", 0.0))
+        self.baseline_snapshot = dict(data.get("baseline_snapshot", {}))
 
         # Tracking state
         self.initial_pos = tuple(data["initial_pos"])

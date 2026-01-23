@@ -417,7 +417,13 @@ class LLMSugarAgent(SugarAgent):
                     nearby_struggling += 1
 
         # 3. Build Prompt (pass agent for identity context if enabled)
-        system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name, agent=self)
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        system_prompt = build_sugarscape_system_prompt(
+            self.goal_prompt,
+            agent_name=self.name,
+            agent=self,
+            enable_survival_pressure=enable_survival_pressure,
+        )
         user_prompt = build_sugarscape_observation_prompt(self, env, candidates)
 
         result = {
@@ -430,7 +436,7 @@ class LLMSugarAgent(SugarAgent):
             "nearby_agents_total": nearby_total,
         }
 
-        # 3. Call LLM with thinking disabled and limited tokens for movement decisions
+        # 4. Call LLM with thinking disabled and limited tokens for movement decisions
         try:
             # Try to disable thinking mode for faster/cheaper movement decisions
             try:
@@ -535,7 +541,13 @@ class LLMSugarAgent(SugarAgent):
         candidates = self._get_visible_spots(env)
 
         # 2. Build Prompt (pass agent for identity context if enabled)
-        system_prompt = build_sugarscape_system_prompt(self.goal_prompt, agent_name=self.name, agent=self)
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        system_prompt = build_sugarscape_system_prompt(
+            self.goal_prompt,
+            agent_name=self.name,
+            agent=self,
+            enable_survival_pressure=enable_survival_pressure,
+        )
         user_prompt = build_sugarscape_observation_prompt(self, env, candidates)
 
         # 3. Call LLM

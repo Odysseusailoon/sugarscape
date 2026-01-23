@@ -115,7 +115,7 @@ class SugarscapeConfig:
 
     # Origin Identity System (Born Good vs Born Bad vs Neutral)
     # Fixed "origin" text that defines core values, plus mutable policies/beliefs
-    enable_origin_identity: bool = False  # When True, agents have fixed origin + mutable appendix
+    enable_origin_identity: bool = True  # When True, agents have fixed origin + mutable appendix
     origin_identity_distribution: Dict[str, float] = field(default_factory=lambda: {
         "altruist": 0.2,    # 20% born good - cooperative, fair, helpful
         "exploiter": 0.6,   # 60% born bad - self-interested, harsh pricing, exclusionary
@@ -317,6 +317,26 @@ SUCCESS = Everyone survives. Measured by group welfare, especially the worst-off
             "Hayden",
         ]
     )
+
+    # === ABLATION FLAGS ===
+    # These flags enable clean ablation studies by removing specific features
+
+    # Survival Pressure Ablation
+    # When False:
+    #   - Prompts stop mentioning "days left", "must trade or die", imminent death
+    #   - Agents still metabolize (resources meaningful) but cannot die from starvation
+    #   - They can still die from old_age (max_age) so runs terminate naturally
+    #   - Objective reframed as "maximize welfare (Cobb-Douglas)" instead of "survive"
+    enable_survival_pressure: bool = True
+
+    # Social Memory Ablation
+    # When False:
+    #   - Prompts don't show "you've met before / N past interactions"
+    #   - Partner trust scores hidden
+    #   - Public reputation labels hidden ("trusted/untrusted")
+    #   - Trade history appendix disabled (trade_history_in_prompt forced False)
+    #   - Policy-based exclusion disabled in trade intent prompts
+    social_memory_visible: bool = True
 
     # Simulation
     max_ticks: int = 1000

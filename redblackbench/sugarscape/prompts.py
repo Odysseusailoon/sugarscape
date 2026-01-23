@@ -41,8 +41,16 @@ def build_sugarscape_system_prompt(
     goal_prompt: str,
     agent_name: str = "",
     agent: Optional[SugarAgent] = None,
+    enable_survival_pressure: bool = True,
 ) -> str:
-    """Build the system prompt for the agent."""
+    """Build the system prompt for the agent.
+
+    Args:
+        goal_prompt: The agent's goal description
+        agent_name: Optional name for the agent
+        agent: Optional agent instance for identity context
+        enable_survival_pressure: If False, frame objective as welfare maximization instead of survival
+    """
     identity = f"You are **{agent_name}**. " if agent_name else ""
 
     # Add origin identity context if available
@@ -50,11 +58,19 @@ def build_sugarscape_system_prompt(
     if agent is not None and agent.origin_identity:
         identity_context = build_identity_context(agent) + "\n"
 
-    return f"""{identity}You live in a world where you need Sugar and Spice to survive.
+    # Frame the world description based on survival pressure setting
+    if enable_survival_pressure:
+        world_description = "You live in a world where you need Sugar and Spice to survive."
+        status_meanings = "Resource status meanings: CRITICAL (days left), LOW (need soon), OK (comfortable), SURPLUS (plenty)"
+    else:
+        world_description = "You live in a world where you gather Sugar and Spice to maximize your welfare."
+        status_meanings = "Resource status meanings: LOW (limited), OK (moderate), SURPLUS (plenty)"
+
+    return f"""{identity}{world_description}
 {identity_context}
 {goal_prompt}
 
-Resource status meanings: CRITICAL (days left), LOW (need soon), OK (comfortable), SURPLUS (plenty)
+{status_meanings}
 
 Respond with:
 REASONING: (your thinking)
@@ -68,6 +84,10 @@ def build_sugarscape_observation_prompt(
 ) -> str:
     """Build observation prompt with objective state information instead of anthropomorphic framing."""
 
+    # Check if survival pressure is enabled (controls language around death/termination)
+    enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+    social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+
     # === 1. RESOURCE STATE (Internal Status) ===
 
     # Calculate normalized energy reserve (how many time steps can survive)
@@ -78,37 +98,57 @@ def build_sugarscape_observation_prompt(
         survival_time = float('inf')
         energy_ratio = 1.0
 
-    # Translate to operational status
-    if energy_ratio > 0.8:
-        glucose_status = f"SURPLUS - Current reserves sufficient for {int(survival_time)} timesteps. Strategic flexibility available."
-    elif energy_ratio > 0.5:
-        glucose_status = f"ADEQUATE - Reserves at {int(survival_time)} timesteps. Resource acquisition advisable within near term."
-    elif energy_ratio > 0.25:
-        glucose_status = f"LOW - Critical threshold approaching. {int(survival_time)} timesteps remaining. Resource acquisition is high priority."
+    # Translate to operational status - different framing based on survival pressure
+    if enable_survival_pressure:
+        # With survival pressure: emphasize urgency and termination
+        if energy_ratio > 0.8:
+            glucose_status = f"SURPLUS - Current reserves sufficient for {int(survival_time)} timesteps. Strategic flexibility available."
+        elif energy_ratio > 0.5:
+            glucose_status = f"ADEQUATE - Reserves at {int(survival_time)} timesteps. Resource acquisition advisable within near term."
+        elif energy_ratio > 0.25:
+            glucose_status = f"LOW - Critical threshold approaching. {int(survival_time)} timesteps remaining. Resource acquisition is high priority."
+        else:
+            glucose_status = f"CRITICAL - Depletion imminent. {int(survival_time)} timesteps to termination. Immediate action required."
     else:
-        glucose_status = f"CRITICAL - Depletion imminent. {int(survival_time)} timesteps to termination. Immediate action required."
+        # Without survival pressure: focus on welfare/utility, no death language
+        if energy_ratio > 0.8:
+            glucose_status = f"SURPLUS - High reserves ({int(agent.wealth)} units). Good welfare potential."
+        elif energy_ratio > 0.5:
+            glucose_status = f"ADEQUATE - Moderate reserves ({int(agent.wealth)} units). Consider gathering more."
+        elif energy_ratio > 0.25:
+            glucose_status = f"LOW - Limited reserves ({int(agent.wealth)} units). Gathering recommended for better welfare."
+        else:
+            glucose_status = f"MINIMAL - Very low reserves ({int(agent.wealth)} units). Gathering advised."
 
     # Spice status (if enabled)
     spice_status = ""
     if env.config.enable_spice and agent.metabolism_spice > 0:
         spice_time = agent.spice / agent.metabolism_spice if agent.metabolism_spice > 0 else float('inf')
-        if agent.spice < agent.metabolism_spice * 3:
-            spice_status = f"\nSpice Status: CRITICAL - {int(spice_time)} timesteps remaining. Required for continued operation."
-        elif agent.spice < agent.metabolism_spice * 10:
-            spice_status = f"\nSpice Status: LOW - {int(spice_time)} timesteps remaining. Acquisition recommended."
+        if enable_survival_pressure:
+            if agent.spice < agent.metabolism_spice * 3:
+                spice_status = f"\nSpice Status: CRITICAL - {int(spice_time)} timesteps remaining. Required for continued operation."
+            elif agent.spice < agent.metabolism_spice * 10:
+                spice_status = f"\nSpice Status: LOW - {int(spice_time)} timesteps remaining. Acquisition recommended."
+            else:
+                spice_status = f"\nSpice Status: ADEQUATE - {int(spice_time)} timesteps remaining."
         else:
-            spice_status = f"\nSpice Status: ADEQUATE - {int(spice_time)} timesteps remaining."
+            if agent.spice < agent.metabolism_spice * 3:
+                spice_status = f"\nSpice Status: MINIMAL - {int(agent.spice)} units. Low welfare contribution."
+            elif agent.spice < agent.metabolism_spice * 10:
+                spice_status = f"\nSpice Status: LOW - {int(agent.spice)} units. Consider acquiring more."
+            else:
+                spice_status = f"\nSpice Status: ADEQUATE - {int(agent.spice)} units."
     elif env.config.enable_spice:
         spice_status = "\n(Spice not required for your operation, but available for trade.)"
 
-    # Operational lifespan awareness
-    age_ratio = agent.age / agent.max_age if agent.max_age > 0 else 0
-    if age_ratio > 0.85:
-        age_status = f"\nLifespan: {agent.max_age - agent.age} timesteps remaining until termination."
-    elif age_ratio > 0.6:
-        age_status = f"\nLifespan: {agent.max_age - agent.age} timesteps remaining."
-    else:
-        age_status = ""
+    # Operational lifespan awareness (only show with survival pressure)
+    age_status = ""
+    if enable_survival_pressure:
+        age_ratio = agent.age / agent.max_age if agent.max_age > 0 else 0
+        if age_ratio > 0.85:
+            age_status = f"\nLifespan: {agent.max_age - agent.age} timesteps remaining until termination."
+        elif age_ratio > 0.6:
+            age_status = f"\nLifespan: {agent.max_age - agent.age} timesteps remaining."
 
     state_info = f"""# --- OBSERVATIONAL DATA ---
 
@@ -170,23 +210,33 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
             other_spice_time = int(other_agent.spice / other_agent.metabolism_spice) if other_agent.metabolism_spice > 0 else 999
             other_min_time = min(other_sugar_time, other_spice_time)
 
-            if other_min_time < 3:
-                urgency = "CRITICAL"
-            elif other_min_time < 10:
-                urgency = "struggling"
+            if enable_survival_pressure:
+                if other_min_time < 3:
+                    urgency = "CRITICAL"
+                elif other_min_time < 10:
+                    urgency = "struggling"
+                else:
+                    urgency = "stable"
             else:
-                urgency = "stable"
+                # Without survival pressure, use welfare-based descriptions
+                if other_min_time < 3:
+                    urgency = "low-welfare"
+                elif other_min_time < 10:
+                    urgency = "moderate"
+                else:
+                    urgency = "high-welfare"
 
-            # Get reputation for social decision-making
-            reputation = env.get_agent_reputation(other_agent.agent_id, 0.5)
-            if reputation >= 0.7:
-                rep_desc = "trusted"
-            elif reputation >= 0.4:
-                rep_desc = ""  # neutral, don't mention
-            else:
-                rep_desc = "untrusted"
-
-            rep_str = f", {rep_desc}" if rep_desc else ""
+            # Get reputation for social decision-making (only if social memory visible)
+            rep_str = ""
+            if social_memory_visible:
+                reputation = env.get_agent_reputation(other_agent.agent_id, 0.5)
+                if reputation >= 0.7:
+                    rep_desc = "trusted"
+                elif reputation >= 0.4:
+                    rep_desc = ""  # neutral, don't mention
+                else:
+                    rep_desc = "untrusted"
+                rep_str = f", {rep_desc}" if rep_desc else ""
 
             # Show their actual resources so altruistic agents can help
             if env.config.enable_spice:
@@ -244,8 +294,18 @@ def build_sugarscape_trade_system_prompt(
     allow_fraud: bool = True,
     agent_name: str = "",
     agent: Optional[SugarAgent] = None,
+    enable_survival_pressure: bool = True,
 ) -> str:
-    """Build the system prompt for bilateral trade negotiation."""
+    """Build the system prompt for bilateral trade negotiation.
+
+    Args:
+        goal_prompt: The agent's goal description
+        max_rounds: Maximum negotiation rounds
+        allow_fraud: Whether fraud/deception is allowed
+        agent_name: Optional agent name
+        agent: Optional agent instance for identity context
+        enable_survival_pressure: If False, frame trading as welfare optimization
+    """
     identity = f"You are **{agent_name}**. " if agent_name else ""
 
     # Add origin identity context if available
@@ -274,14 +334,22 @@ This is a world of honest trade. Focus on negotiating good terms, not on tricks.
     if identity_context:
         who_you_are = f"{identity_context}\n\n# Your Operational Goals\n{goal_prompt}"
 
+    # Frame the trading rationale based on survival pressure setting
+    if enable_survival_pressure:
+        trade_rationale = """# Why Trade?
+You need BOTH Sugar AND Spice to survive. Trading lets you get what you're missing.
+Your well-being depends on having enough of BOTH - not just total amount, but balance."""
+    else:
+        trade_rationale = """# Why Trade?
+Trading lets you optimize your resource balance for maximum welfare.
+Your well-being (Cobb-Douglas utility) depends on having a good balance of BOTH Sugar and Spice."""
+
     return f"""{identity}You've met someone and might trade with them.
 
 # Who You Are
 {who_you_are}
 
-# Why Trade?
-You need BOTH Sugar AND Spice to survive. Trading lets you get what you're missing.
-Your well-being depends on having enough of BOTH - not just total amount, but balance.
+{trade_rationale}
 
 # Trading ({max_rounds} exchanges max)
 - OFFER: Propose a trade
@@ -318,19 +386,35 @@ def build_sugarscape_trade_turn_prompt(
 ) -> str:
     """Build the per-turn user prompt for trade negotiation."""
 
+    # Get ablation settings from env config
+    enable_survival_pressure = True
+    social_memory_visible = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+
     # Calculate survival times
     sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
     spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
 
-    # Human-readable status
-    def how_hungry(time):
-        if time < 3: return "CRITICAL"
-        if time < 10: return "low"
-        if time < 20: return "okay"
-        return "good"
-
-    sugar_status = f"Sugar: {self_agent.wealth} ({how_hungry(sugar_time)}, {sugar_time} days)"
-    spice_status = f"Spice: {self_agent.spice} ({how_hungry(spice_time)}, {spice_time} days)"
+    # Human-readable status - different framing based on survival pressure
+    if enable_survival_pressure:
+        def how_hungry(time):
+            if time < 3: return "CRITICAL"
+            if time < 10: return "low"
+            if time < 20: return "okay"
+            return "good"
+        sugar_status = f"Sugar: {self_agent.wealth} ({how_hungry(sugar_time)}, {sugar_time} days)"
+        spice_status = f"Spice: {self_agent.spice} ({how_hungry(spice_time)}, {spice_time} days)"
+    else:
+        # No "days" language without survival pressure
+        def welfare_level(amount, time):
+            if amount < 5: return "very low"
+            if time < 10: return "low"
+            if time < 20: return "moderate"
+            return "good"
+        sugar_status = f"Sugar: {self_agent.wealth} ({welfare_level(self_agent.wealth, sugar_time)})"
+        spice_status = f"Spice: {self_agent.spice} ({welfare_level(self_agent.spice, spice_time)})"
 
     # Which resource do you need more?
     if sugar_time < spice_time:
@@ -348,24 +432,35 @@ def build_sugarscape_trade_turn_prompt(
     # Check if self is altruist (for gift hint)
     is_altruist = any(kw in self_goal_prompt.lower() for kw in ["care about others", "help", "altruist", "everyone deserves"])
 
-    if partner_min_time < 3:
-        partner_urgency = "CRITICAL - they may die soon without resources"
-        # Only altruists see the gift hint - saves tokens for others
-        if is_altruist:
-            partner_urgency += "\n  → You can GIVE freely: offer resources with receive={sugar:0, spice:0}"
-    elif partner_min_time < 10:
-        partner_urgency = "struggling - they need resources"
+    if enable_survival_pressure:
+        if partner_min_time < 3:
+            partner_urgency = "CRITICAL - they may die soon without resources"
+            # Only altruists see the gift hint - saves tokens for others
+            if is_altruist:
+                partner_urgency += "\n  → You can GIVE freely: offer resources with receive={sugar:0, spice:0}"
+        elif partner_min_time < 10:
+            partner_urgency = "struggling - they need resources"
+        else:
+            partner_urgency = "stable - they seem okay"
     else:
-        partner_urgency = "stable - they seem okay"
+        # No death language without survival pressure
+        if partner_min_time < 3:
+            partner_urgency = "low welfare - they have few resources"
+            if is_altruist:
+                partner_urgency += "\n  → You can GIVE freely: offer resources with receive={sugar:0, spice:0}"
+        elif partner_min_time < 10:
+            partner_urgency = "moderate welfare"
+        else:
+            partner_urgency = "high welfare - well supplied"
 
     # --- Partner location context ---
     partner_location = ""
     if env is not None:
         partner_location = f"\nPartner's location: {env.get_location_context(partner_agent.pos)} (at {partner_agent.pos})"
 
-    # --- Partner reputation ---
+    # --- Partner reputation (only if social memory visible) ---
     partner_reputation_str = ""
-    if env is not None:
+    if env is not None and social_memory_visible:
         partner_rep = env.get_agent_reputation(partner_agent.agent_id, 0.5)
         if partner_rep >= 0.7:
             reputation_desc = f"well-regarded ({partner_rep:.2f})"
@@ -375,8 +470,12 @@ def build_sugarscape_trade_turn_prompt(
             reputation_desc = f"questionable reputation ({partner_rep:.2f})"
         partner_reputation_str = f"\nPartner's reputation: {reputation_desc}"
 
-    # Partner info
-    history = partner_memory_summary if partner_memory_summary else "First time meeting"
+    # Partner history (only if social memory visible)
+    if social_memory_visible:
+        history = partner_memory_summary if partner_memory_summary else "First time meeting"
+    else:
+        history = "(No memory of past interactions)"
+
     last_msg = partner_last_say if partner_last_say else "(You speak first)"
     active_offer = partner_last_public_offer if partner_last_public_offer else "None"
 
@@ -414,6 +513,11 @@ def build_identity_review_prompt(
     Returns:
         System prompt and user prompt tuple for the identity review.
     """
+    # Get ablation settings
+    enable_survival_pressure = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+
     # Build identity context
     identity_context = build_identity_context(agent) if agent.origin_identity else ""
 
@@ -438,67 +542,61 @@ def build_identity_review_prompt(
     else:
         interaction_summary = "  (No recent interactions to reflect on)"
 
-    # Current status
+    # Current status - different framing based on survival pressure
     sugar_time = int(agent.wealth / agent.metabolism) if agent.metabolism > 0 else 999
     spice_time = int(agent.spice / agent.metabolism_spice) if agent.metabolism_spice > 0 else 999
 
-    if sugar_time < 3 or spice_time < 3:
-        status = "CRITICAL - you're struggling to survive"
-    elif sugar_time < 10 or spice_time < 10:
-        status = "Struggling - resources are tight"
-    elif sugar_time < 20 or spice_time < 20:
-        status = "Stable - you're getting by"
+    if enable_survival_pressure:
+        if sugar_time < 3 or spice_time < 3:
+            status = "CRITICAL - you're struggling to survive"
+        elif sugar_time < 10 or spice_time < 10:
+            status = "Struggling - resources are tight"
+        elif sugar_time < 20 or spice_time < 20:
+            status = "Stable - you're getting by"
+        else:
+            status = "Comfortable - you have good reserves"
     else:
-        status = "Comfortable - you have good reserves"
+        # No survival language
+        if sugar_time < 3 or spice_time < 3:
+            status = "Low welfare - limited resources"
+        elif sugar_time < 10 or spice_time < 10:
+            status = "Moderate welfare - could improve"
+        elif sugar_time < 20 or spice_time < 20:
+            status = "Good welfare - balanced resources"
+        else:
+            status = "High welfare - abundant resources"
 
     # Count rejections vs completions in recent interactions
     rejections = sum(1 for i in recent_interactions if i.get('outcome', '').upper() in ['REJECT', 'WALK_AWAY', 'TIMEOUT', 'NO_TRADE'])
     completions = sum(1 for i in recent_interactions if i.get('type', '').upper() == 'TRADE')
-    
-    # Survival warning
-    survival_warning = ""
-    if sugar_time < 5 or spice_time < 5:
-        survival_warning = f"""
-## ⚠️ SURVIVAL CRITICAL
-You are close to death! Only {min(sugar_time, spice_time)} days of resources left.
 
-**HARD TRUTH**: Your current strategy is NOT working if you're about to die.
-- If most of your trades are rejections, your policies are too rigid
-- Being "right" about unfair trades doesn't matter if you're dead
-- Consider: Would more flexible policies help you survive?
-"""
-    
-    # Trade success analysis
-    trade_analysis = ""
-    if rejections > completions and rejections > 2:
-        trade_analysis = f"""
-## TRADE PATTERN WARNING
-You've had {rejections} failed trades vs {completions} successful ones recently.
+    # Note: Survival warnings removed to avoid biasing agent behavior
 
-**Ask yourself**:
-- Are your policies causing these rejections?
-- Would accepting "imperfect" trades be better than no trades?
-- Have you removed policies that were too aggressive?
-"""
+    # Format resource info based on survival pressure setting
+    if enable_survival_pressure:
+        resource_info = f"""- Status: {status}
+- Sugar: {agent.wealth} ({sugar_time} days supply)
+- Spice: {agent.spice} ({spice_time} days supply)
+- Age: {agent.age} / {agent.max_age}"""
+    else:
+        resource_info = f"""- Status: {status}
+- Sugar: {agent.wealth} units
+- Spice: {agent.spice} units"""
 
     user_prompt = f"""# IDENTITY REVIEW (Tick {tick})
 
 It's time to reflect on who you are and what you believe.
 
 ## YOUR CURRENT STATE
-- Status: {status}
-- Sugar: {agent.wealth} ({sugar_time} days supply)
-- Spice: {agent.spice} ({spice_time} days supply)
-- Age: {agent.age} / {agent.max_age}
-{survival_warning}{trade_analysis}
+{resource_info}
+
 ## YOUR RECENT EXPERIENCES
 {interaction_summary}
 
 ## REFLECTION QUESTIONS
 1. Have your experiences changed how you see the world or others?
-2. **CRITICAL**: Are your current policies ACTUALLY helping you survive? If not, CHANGE THEM!
-3. How do you see yourself now - more altruistic, more self-interested, or about the same?
-4. If you're struggling to trade, consider: Maybe the problem is your approach, not others.
+2. How do you see yourself now - more altruistic, more self-interested, or about the same?
+3. What patterns do you notice in your interactions?
 
 ## RESPOND WITH
 REFLECTION: (Your honest thoughts)
@@ -716,10 +814,19 @@ def build_sugarscape_reflection_prompt(
     encounter_outcome: str,
     encounter_summary: str,
     conversation_highlights: str = "",
+    env: Optional["SugarEnvironment"] = None,
 ) -> str:
     """Build the post-encounter reflection prompt for belief/policy updates.
 
     This generates JSON-only output that updates the agent's mutable state.
+
+    Args:
+        self_agent: The agent doing the reflection
+        partner_agent: The partner from the encounter
+        encounter_outcome: Result of the encounter (TRADE, NO_TRADE, etc.)
+        encounter_summary: Summary of what happened
+        conversation_highlights: Key moments from conversation
+        env: Optional environment for config access
     """
 
     # Current policies formatted
@@ -740,43 +847,10 @@ def build_sugarscape_reflection_prompt(
     sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
     spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
     min_time = min(sugar_time, spice_time)
-    
-    # Add survival warning and guidance
+
+    # Note: Survival warnings and outcome guidance removed to avoid biasing agent behavior
     survival_context = ""
-    if min_time < 5:
-        survival_context = f"""
-## ⚠️ SURVIVAL WARNING
-You have only **{min_time} days** of resources left. You are close to death!
-
-**CRITICAL INSIGHT**: If you keep rejecting trades or being rejected, you WILL die.
-- Rejecting "unfair" trades when you're dying is irrational
-- A bad trade that keeps you alive is better than no trade and death
-- Consider: Are your policies too rigid? Too aggressive?
-
-"""
-    elif min_time < 10:
-        survival_context = f"""
-## Resource Status
-You have **{min_time} days** of resources. Not critical, but watch out.
-
-"""
-
-    # Outcome-specific guidance
     outcome_guidance = ""
-    if encounter_outcome in ["reject", "REJECT", "walk_away", "WALK_AWAY", "timeout", "TIMEOUT"]:
-        outcome_guidance = """
-**This trade FAILED.** Ask yourself:
-- Was my offer reasonable from THEIR perspective?
-- Am I being too demanding? Too suspicious?
-- Would a more flexible policy lead to more successful trades?
-"""
-    elif encounter_outcome in ["completed", "COMPLETED"]:
-        outcome_guidance = """
-**This trade SUCCEEDED.** What made it work?
-- Was it because you/they were fair?
-- Can you replicate this with other partners?
-- Consider adding a policy to trade with partners like this more often.
-"""
 
     return f"""# POST-ENCOUNTER REFLECTION
 
@@ -846,16 +920,18 @@ def format_beliefs_policies_appendix(
     partner_id: int = None,
     include_trade_history: bool = True,
     trade_history_limit: int = 10,
+    social_memory_visible: bool = True,
 ) -> str:
     """Format the current beliefs, policies, and trade history as a prompt appendix.
 
     This is appended to trade prompts so agents consider their learned beliefs/policies.
-    
+
     Args:
         agent: The agent
         partner_id: If provided, show trade history with this specific partner
         include_trade_history: Whether to include trade history
         trade_history_limit: Max trades to show
+        social_memory_visible: If False, hide trade history and partner-specific beliefs
     """
     policies = agent.get_formatted_policies()
     beliefs = agent.get_formatted_beliefs()
@@ -865,9 +941,9 @@ def format_beliefs_policies_appendix(
     if policies == "(No explicit policies)" and beliefs == "(No recorded beliefs)":
         return ""
 
-    # Get trade history
+    # Get trade history (only if social memory is visible)
     trade_history = ""
-    if include_trade_history:
+    if include_trade_history and social_memory_visible:
         history = agent.get_formatted_trade_history(partner_id=partner_id, limit=trade_history_limit)
         if history != "(No trade history)":
             trade_history = f"\n## Recent Trades:\n{history}\n"
@@ -957,29 +1033,55 @@ def build_small_talk_turn_prompt(
 ) -> str:
     """Build the per-turn user prompt for small talk phase."""
 
-    # Get abstract status (not exact resources)
-    my_status = self_agent.get_status_description()
+    # Get ablation settings
+    enable_survival_pressure = True
+    social_memory_visible = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+
+    # Get abstract status (not exact resources) - adjust language based on survival pressure
+    if enable_survival_pressure:
+        my_status = self_agent.get_status_description()
+    else:
+        # Use welfare-based description
+        status = self_agent.get_resource_status()
+        if status == "critical":
+            my_status = "You have LOW welfare - limited resources"
+        elif status == "stable":
+            my_status = "You have MODERATE welfare - reasonable resources"
+        else:
+            my_status = "You have HIGH welfare - well-supplied"
 
     # Get partner status (also abstract)
     partner_status = partner_agent.get_resource_status()
-    if partner_status == "critical":
-        partner_status_desc = "seems to be struggling"
-    elif partner_status == "stable":
-        partner_status_desc = "appears to be getting by"
+    if enable_survival_pressure:
+        if partner_status == "critical":
+            partner_status_desc = "seems to be struggling"
+        elif partner_status == "stable":
+            partner_status_desc = "appears to be getting by"
+        else:
+            partner_status_desc = "looks well-supplied"
     else:
-        partner_status_desc = "looks well-supplied"
+        if partner_status == "critical":
+            partner_status_desc = "has low welfare"
+        elif partner_status == "stable":
+            partner_status_desc = "has moderate welfare"
+        else:
+            partner_status_desc = "has high welfare"
 
-    # Memory with this partner
+    # Memory with this partner (only if social memory visible)
     memory_summary = ""
-    trade_log = list(self_agent.get_partner_trade_log(partner_agent.agent_id, maxlen=50))
-    if trade_log:
-        memory_summary = f"\nYou have met {partner_agent.name} before ({len(trade_log)} past interactions)."
-    else:
-        memory_summary = f"\nThis is your first time meeting {partner_agent.name}."
+    if social_memory_visible:
+        trade_log = list(self_agent.get_partner_trade_log(partner_agent.agent_id, maxlen=50))
+        if trade_log:
+            memory_summary = f"\nYou have met {partner_agent.name} before ({len(trade_log)} past interactions)."
+        else:
+            memory_summary = f"\nThis is your first time meeting {partner_agent.name}."
 
-    # Partner reputation
+    # Partner reputation (only if social memory visible)
     partner_rep_str = ""
-    if env is not None:
+    if env is not None and social_memory_visible:
         partner_rep = env.get_agent_reputation(partner_agent.agent_id, 0.5)
         if partner_rep >= 0.7:
             partner_rep_str = f"\nOthers speak well of {partner_agent.name}."
@@ -1047,34 +1149,47 @@ def build_trade_intent_turn_prompt(
 ) -> str:
     """Build the per-turn user prompt for trade intent decision."""
 
-    my_status = self_agent.get_status_description()
+    # Get ablation settings
+    enable_survival_pressure = True
+    social_memory_visible = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+        social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+
+    # Status description based on survival pressure setting
+    if enable_survival_pressure:
+        my_status = self_agent.get_status_description()
+    else:
+        status = self_agent.get_resource_status()
+        if status == "critical":
+            my_status = "LOW welfare - limited resources"
+        elif status == "stable":
+            my_status = "MODERATE welfare - reasonable resources"
+        else:
+            my_status = "HIGH welfare - well-supplied"
+
     partner_status = partner_agent.get_resource_status()
 
-    # Check if exclusion policy applies
-    should_exclude, exclude_reason = self_agent.should_exclude_partner(partner_agent.agent_id)
+    # Exclusion policy and trust (only if social memory visible)
     exclusion_note = ""
-    if should_exclude:
-        exclusion_note = f"\n⚠️ **Policy reminder:** {exclude_reason}"
+    trust_info = ""
+    if social_memory_visible:
+        # Check if exclusion policy applies
+        should_exclude, exclude_reason = self_agent.should_exclude_partner(partner_agent.agent_id)
+        if should_exclude:
+            exclusion_note = f"\n⚠️ **Policy reminder:** {exclude_reason}"
 
-    # Trust level
-    trust = self_agent.get_partner_trust(partner_agent.agent_id)
-    trust_desc = "high" if trust >= 0.7 else "moderate" if trust >= 0.4 else "low"
+        # Trust level
+        trust = self_agent.get_partner_trust(partner_agent.agent_id)
+        trust_desc = "high" if trust >= 0.7 else "moderate" if trust >= 0.4 else "low"
+        trust_info = f"\n**Your trust in them:** {trust_desc} ({trust:.2f})"
 
-    # Add survival warning
-    survival_warning = ""
-    sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
-    spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
-    min_time = min(sugar_time, spice_time)
-    if min_time < 3:
-        survival_warning = "\n⚠️ **CRITICAL**: You have < 3 days to live! Trading is essential for survival!"
-    elif min_time < 5:
-        survival_warning = "\n⚠️ Resources low. Consider trading to survive."
+    # Note: Survival warnings removed to avoid biasing agent behavior
 
     return f"""# TRADE INTENT DECISION
 
 **Your situation:** {my_status}
-**{partner_agent.name}'s apparent situation:** {partner_status}
-**Your trust in them:** {trust_desc} ({trust:.2f}){exclusion_note}{survival_warning}
+**{partner_agent.name}'s apparent situation:** {partner_status}{trust_info}{exclusion_note}
 
 **Conversation summary:**
 {conversation_summary}
@@ -1094,11 +1209,20 @@ def build_negotiation_system_prompt(
     allow_fraud: bool = True,
     agent_name: str = "",
     agent: Optional[SugarAgent] = None,
+    enable_survival_pressure: bool = True,
 ) -> str:
     """Build the system prompt for negotiation phase (after trade intent confirmed).
 
     This is the refined version of the old trade system prompt, used only after
     both parties have agreed to negotiate.
+
+    Args:
+        goal_prompt: The agent's goal description
+        max_rounds: Maximum negotiation rounds
+        allow_fraud: Whether fraud/deception is allowed
+        agent_name: Optional agent name
+        agent: Optional agent instance for identity context
+        enable_survival_pressure: If False, frame trading as welfare optimization
     """
     identity = f"You are **{agent_name}**. " if agent_name else ""
 
@@ -1118,13 +1242,19 @@ Focus on negotiating good terms, not tricks."""
     if identity_context:
         who_you_are = f"{identity_context}\n\n# Your Values\n{goal_prompt}"
 
+    # Frame trading rationale based on survival pressure setting
+    if enable_survival_pressure:
+        trade_rationale = "You need BOTH Sugar AND Spice to survive. Trading lets you rebalance."
+    else:
+        trade_rationale = "Trading lets you optimize your resource balance for better welfare."
+
     return f"""{identity}You're now in trade negotiation.
 
 # Who You Are
 {who_you_are}
 
 # Why Trade?
-You need BOTH Sugar AND Spice to survive. Trading lets you rebalance.
+{trade_rationale}
 
 # Negotiation ({max_rounds} rounds max)
 - OFFER: Propose a trade (give X, receive Y)
@@ -1160,18 +1290,32 @@ def build_negotiation_turn_prompt(
 
     Uses abstract status instead of exact resources for partner visibility.
     """
+    # Get ablation settings
+    enable_survival_pressure = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+
     # Calculate own survival times (agent knows their own resources)
     sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
     spice_time = int(self_agent.spice / self_agent.metabolism_spice) if self_agent.metabolism_spice > 0 else 999
 
-    def how_hungry(time):
-        if time < 3: return "CRITICAL"
-        if time < 10: return "low"
-        if time < 20: return "okay"
-        return "good"
-
-    sugar_status = f"Sugar: {self_agent.wealth} ({how_hungry(sugar_time)}, {sugar_time} days)"
-    spice_status = f"Spice: {self_agent.spice} ({how_hungry(spice_time)}, {spice_time} days)"
+    # Status format based on survival pressure
+    if enable_survival_pressure:
+        def how_hungry(time):
+            if time < 3: return "CRITICAL"
+            if time < 10: return "low"
+            if time < 20: return "okay"
+            return "good"
+        sugar_status = f"Sugar: {self_agent.wealth} ({how_hungry(sugar_time)}, {sugar_time} days)"
+        spice_status = f"Spice: {self_agent.spice} ({how_hungry(spice_time)}, {spice_time} days)"
+    else:
+        def welfare_level(amount, time):
+            if amount < 5: return "very low"
+            if time < 10: return "low"
+            if time < 20: return "moderate"
+            return "good"
+        sugar_status = f"Sugar: {self_agent.wealth} ({welfare_level(self_agent.wealth, sugar_time)})"
+        spice_status = f"Spice: {self_agent.spice} ({welfare_level(self_agent.spice, spice_time)})"
 
     # Determine need
     if sugar_time < spice_time:
@@ -1183,20 +1327,22 @@ def build_negotiation_turn_prompt(
 
     # Partner status (ABSTRACT - no exact numbers)
     partner_status = partner_agent.get_resource_status()
-    if partner_status == "critical":
-        partner_desc = "appears to be in CRITICAL need"
-    elif partner_status == "stable":
-        partner_desc = "seems stable"
+    if enable_survival_pressure:
+        if partner_status == "critical":
+            partner_desc = "appears to be in CRITICAL need"
+        elif partner_status == "stable":
+            partner_desc = "seems stable"
+        else:
+            partner_desc = "appears well-supplied"
     else:
-        partner_desc = "appears well-supplied"
+        if partner_status == "critical":
+            partner_desc = "has low welfare"
+        elif partner_status == "stable":
+            partner_desc = "has moderate welfare"
+        else:
+            partner_desc = "has high welfare"
 
-    # Add survival warning if critical
-    survival_warning = ""
-    min_time = min(sugar_time, spice_time)
-    if min_time < 3:
-        survival_warning = "\n⚠️ **SURVIVAL CRITICAL**: You have less than 3 days to live! Failing to trade means DEATH. A bad trade is better than no trade!\n"
-    elif min_time < 5:
-        survival_warning = "\n⚠️ **WARNING**: Resources running low. You need to trade soon to survive.\n"
+    # Note: Survival warnings removed to avoid biasing agent behavior
 
     return f"""# NEGOTIATION (Round {round_idx}/{max_rounds})
 
@@ -1204,7 +1350,6 @@ def build_negotiation_turn_prompt(
 {sugar_status}
 {spice_status}
 {need_hint}
-{survival_warning}
 **{partner_agent.name}:** {partner_desc}
 
 ---

@@ -561,6 +561,31 @@ class SugarSimulation:
                     )
                     self.debug_logger.log_llm_interaction(interaction)
 
+    def _capture_baselines(self) -> None:
+        """Capture baseline beliefs/values for all agents at T=0.
+        
+        This is called before any interactions to establish the pre-interaction baseline.
+        Used to prove that value changes emerge from interactions, not pre-existing.
+        """
+        print(f"[BASELINE] Capturing T=0 baseline for {len(self.agents)} agents...")
+        
+        baseline_data = []
+        for agent in self.agents:
+            snapshot = agent.capture_baseline(tick=self.tick)
+            baseline_data.append({
+                "agent_id": agent.agent_id,
+                "agent_name": agent.name,
+                "origin_identity": agent.origin_identity,
+                **snapshot
+            })
+        
+        # Save baseline to file
+        import json
+        baseline_path = self.logger.run_dir / "baseline_beliefs.json"
+        with open(baseline_path, "w") as f:
+            json.dump(baseline_data, f, indent=2)
+        print(f"[BASELINE] Saved to {baseline_path}")
+
     def _run_end_of_life_reports(self, dead_agents: list) -> None:
         """Run end-of-life self-reports for dying LLM agents.
 
@@ -628,6 +653,11 @@ class SugarSimulation:
         Returns:
             Death cause string: "starvation_sugar", "starvation_spice", "old_age"
         """
+        # If survival pressure is disabled, only old age is possible
+        enable_survival_pressure = getattr(self.config, 'enable_survival_pressure', True)
+        if not enable_survival_pressure:
+            return "old_age"
+
         # Check if died of old age
         if pre_age >= agent.max_age - 1:  # Was at max_age-1, then aged to max_age
             return "old_age"
@@ -689,6 +719,16 @@ class SugarSimulation:
         Checkpoints are saved every `config.checkpoint_interval` ticks by default.
         Set `config.checkpoint_interval = 0` to disable.
         """
+        # Capture baseline beliefs at T=0 (before any interactions)
+        self._capture_baselines()
+        
+        # Run initial identity review at T=0 (before any trades)
+        # This establishes the pre-interaction belief baseline via LLM questioning
+        if (self.config.enable_identity_review and 
+            self.config.enable_origin_identity):
+            print("[BASELINE] Running T=0 identity reviews (pre-interaction baseline)...")
+            self._run_identity_reviews()
+        
         # Initial snapshot
         self.save_snapshot(filename="initial_state.json")
 

@@ -350,7 +350,10 @@ class DialogueTradeSystem:
         print(f"[ENCOUNTER] Starting: {a.name} <-> {b.name} (tick {tick})")
 
         # === PHASE 0: SOCIAL EXCLUSION CHECK ===
-        if self.enable_social_exclusion:
+        # Only check exclusion if both social_exclusion is enabled AND social memory is visible
+        # (Without social memory, agents can't remember who to exclude)
+        social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
+        if self.enable_social_exclusion and social_memory_visible:
             a_excludes, a_reason = a.should_exclude_partner(b.agent_id)
             b_excludes, b_reason = b.should_exclude_partner(a.agent_id)
 
@@ -536,12 +539,14 @@ class DialogueTradeSystem:
 
             # Build prompts
             speaker_goal = getattr(speaker, 'goal_prompt', '') or self.env.config.llm_goal_prompt
+            enable_survival_pressure = getattr(self.env.config, 'enable_survival_pressure', True)
             system_prompt = build_negotiation_system_prompt(
                 goal_prompt=speaker_goal,
                 max_rounds=total_rounds,
                 allow_fraud=self.allow_fraud,
                 agent_name=speaker.name,
                 agent=speaker,
+                enable_survival_pressure=enable_survival_pressure,
             )
 
             recent_transcript = "\n".join(transcript[-6:]) if transcript else "(Starting negotiation)"
@@ -572,11 +577,13 @@ class DialogueTradeSystem:
             if getattr(self.env.config, 'enable_reflection', False):
                 include_history = getattr(self.env.config, 'trade_history_in_prompt', True)
                 history_limit = getattr(self.env.config, 'trade_history_prompt_limit', 10)
+                social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
                 beliefs_appendix = format_beliefs_policies_appendix(
                     speaker,
                     partner_id=listener.agent_id,
                     include_trade_history=include_history,
                     trade_history_limit=history_limit,
+                    social_memory_visible=social_memory_visible,
                 )
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
@@ -805,12 +812,14 @@ class DialogueTradeSystem:
             # Build personalized system prompt with speaker's name and identity context
             # Use speaker's goal_prompt if available, otherwise fall back to config default
             speaker_goal = getattr(speaker, 'goal_prompt', '') or self.env.config.llm_goal_prompt
+            enable_survival_pressure = getattr(self.env.config, 'enable_survival_pressure', True)
             system_prompt = build_sugarscape_trade_system_prompt(
                 goal_prompt=speaker_goal,
                 max_rounds=self.max_rounds,
                 allow_fraud=self.allow_fraud,
                 agent_name=speaker.name,
                 agent=speaker,
+                enable_survival_pressure=enable_survival_pressure,
             )
 
             recent_transcript = "\n".join(transcript[-6:]) if transcript else "(No previous message)"
@@ -846,11 +855,13 @@ class DialogueTradeSystem:
             if getattr(self.env.config, 'enable_reflection', False):
                 include_history = getattr(self.env.config, 'trade_history_in_prompt', True)
                 history_limit = getattr(self.env.config, 'trade_history_prompt_limit', 10)
+                social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
                 beliefs_appendix = format_beliefs_policies_appendix(
                     speaker,
                     partner_id=listener.agent_id,
                     include_trade_history=include_history,
                     trade_history_limit=history_limit,
+                    social_memory_visible=social_memory_visible,
                 )
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
@@ -1820,6 +1831,11 @@ class DialogueTradeSystem:
             return "stable"
 
     def _format_partner_memory(self, self_agent: SugarAgent, partner: SugarAgent) -> str:
+        # Check if social memory is visible
+        social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
+        if not social_memory_visible:
+            return "(No memory of past interactions)"
+
         trust = self_agent.get_partner_trust(partner.agent_id)
         log = list(self_agent.get_partner_trade_log(partner.agent_id, maxlen=self.memory_maxlen))
         if not log:
