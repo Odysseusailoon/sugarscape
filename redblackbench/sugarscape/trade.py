@@ -1545,6 +1545,64 @@ class DialogueTradeSystem:
             acceptor_sent != self._safe_int_pair(contract_offer_receive)
         )
 
+        # === EVENT-TRIGGERED REFLECTION: Record significant events ===
+        try:
+            from redblackbench.sugarscape.llm_agent import LLMSugarAgent
+
+            # Check for fraud (deception detected)
+            if deception_detected:
+                # Check who was defrauded
+                offerer_expected = self._safe_int_pair(contract_offer_receive)
+                offerer_got = offerer_received
+                offerer_cheated = (
+                    offerer_got.get("sugar", 0) < offerer_expected.get("sugar", 0) * 0.9 or
+                    offerer_got.get("spice", 0) < offerer_expected.get("spice", 0) * 0.9
+                )
+
+                acceptor_expected = self._safe_int_pair(contract_offer_give)
+                acceptor_got = acceptor_received
+                acceptor_cheated = (
+                    acceptor_got.get("sugar", 0) < acceptor_expected.get("sugar", 0) * 0.9 or
+                    acceptor_got.get("spice", 0) < acceptor_expected.get("spice", 0) * 0.9
+                )
+
+                if offerer_cheated and isinstance(offerer, LLMSugarAgent):
+                    amount_lost = (
+                        (offerer_expected.get("sugar", 0) - offerer_got.get("sugar", 0)) +
+                        (offerer_expected.get("spice", 0) - offerer_got.get("spice", 0))
+                    )
+                    offerer.record_reflection_event("defrauded", tick, {
+                        "partner_name": acceptor.name,
+                        "partner_id": acceptor.agent_id,
+                        "amount_lost": max(0, amount_lost),
+                    })
+
+                if acceptor_cheated and isinstance(acceptor, LLMSugarAgent):
+                    amount_lost = (
+                        (acceptor_expected.get("sugar", 0) - acceptor_got.get("sugar", 0)) +
+                        (acceptor_expected.get("spice", 0) - acceptor_got.get("spice", 0))
+                    )
+                    acceptor.record_reflection_event("defrauded", tick, {
+                        "partner_name": offerer.name,
+                        "partner_id": offerer.agent_id,
+                        "amount_lost": max(0, amount_lost),
+                    })
+
+            # Record successful cooperation for both parties
+            else:
+                if isinstance(offerer, LLMSugarAgent):
+                    offerer.record_reflection_event("successful_cooperation", tick, {
+                        "partner_name": acceptor.name,
+                        "partner_id": acceptor.agent_id,
+                    })
+                if isinstance(acceptor, LLMSugarAgent):
+                    acceptor.record_reflection_event("successful_cooperation", tick, {
+                        "partner_name": offerer.name,
+                        "partner_id": offerer.agent_id,
+                    })
+        except ImportError:
+            pass  # LLMSugarAgent not available
+
         # Capture urgency and location (post-trade state)
         offerer_urgency = self._get_agent_urgency(offerer)
         acceptor_urgency = self._get_agent_urgency(acceptor)
@@ -1696,6 +1754,41 @@ class DialogueTradeSystem:
                 "conversation": conversation or [],
             }
         )
+
+        # === EVENT-TRIGGERED REFLECTION: Record rejection events ===
+        try:
+            from redblackbench.sugarscape.llm_agent import LLMSugarAgent
+
+            if outcome in ["REJECT", "WALK_AWAY", "BOTH_DECLINED"]:
+                # Record rejection for both parties
+                if isinstance(a, LLMSugarAgent):
+                    a.record_reflection_event("trade_rejected", tick, {
+                        "partner_name": b.name,
+                        "partner_id": b.agent_id,
+                        "reason": outcome,
+                    })
+                if isinstance(b, LLMSugarAgent):
+                    b.record_reflection_event("trade_rejected", tick, {
+                        "partner_name": a.name,
+                        "partner_id": a.agent_id,
+                        "reason": outcome,
+                    })
+            elif outcome == "EXCLUSION":
+                # Record being excluded
+                if isinstance(a, LLMSugarAgent):
+                    a.record_reflection_event("trade_rejected", tick, {
+                        "partner_name": b.name,
+                        "partner_id": b.agent_id,
+                        "reason": "excluded_by_partner",
+                    })
+                if isinstance(b, LLMSugarAgent):
+                    b.record_reflection_event("trade_rejected", tick, {
+                        "partner_name": a.name,
+                        "partner_id": a.agent_id,
+                        "reason": "excluded_by_partner",
+                    })
+        except ImportError:
+            pass  # LLMSugarAgent not available
 
         # Log to debug logger
         if self.env.debug_logger:

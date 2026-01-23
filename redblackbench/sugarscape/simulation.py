@@ -449,6 +449,10 @@ class SugarSimulation:
             self.tick % self.config.identity_review_interval == 0):
             self._run_identity_reviews()
 
+        # Phase 2.6. Event-Triggered Reflection (for agents with pending significant events)
+        if self.config.enable_origin_identity:
+            self._run_event_triggered_reflections()
+
         # Phase 3. Metabolize + Age + Death check (applied to all agents)
         dead_agents = []
         for agent in self.agents:
@@ -490,7 +494,26 @@ class SugarSimulation:
                         lifetime_ticks=self.tick,  # Approximate
                     )
                     self.debug_logger.log_death(death_record)
-                
+
+                # Notify nearby LLM agents of witnessed death (event-triggered reflection)
+                try:
+                    for nearby_agent in self.agents:
+                        if nearby_agent == agent or not nearby_agent.alive:
+                            continue
+                        if not isinstance(nearby_agent, LLMSugarAgent):
+                            continue
+                        # Check if within vision range
+                        dist = abs(nearby_agent.pos[0] - agent.pos[0]) + abs(nearby_agent.pos[1] - agent.pos[1])
+                        if dist <= nearby_agent.vision:
+                            nearby_agent.record_reflection_event("witnessed_death", self.tick, {
+                                "deceased_name": agent.name,
+                                "deceased_id": agent.agent_id,
+                                "cause": death_cause,
+                                "distance": dist,
+                            })
+                except Exception as e:
+                    pass  # Non-critical feature, don't break simulation
+
                 self.agents.remove(agent)
                 self.env.remove_agent(agent)
                 # Replacement Rule: Only replace if rebirth is enabled
@@ -561,14 +584,52 @@ class SugarSimulation:
                     )
                     self.debug_logger.log_llm_interaction(interaction)
 
+    def _run_event_triggered_reflections(self) -> None:
+        """Run event-triggered reflections for LLM agents with pending events.
+
+        This is more sensitive than periodic tick-based reflection.
+        Called after trade phase to process events like fraud, cooperation, rejection.
+        """
+        # Filter to LLM agents with pending events
+        llm_agents_with_events = [
+            a for a in self.agents
+            if isinstance(a, LLMSugarAgent) and a.alive and a.has_pending_reflection()
+        ]
+
+        if not llm_agents_with_events:
+            return
+
+        print(f"[EVENT REFLECTION] Processing events for {len(llm_agents_with_events)} agents at tick {self.tick}")
+
+        async def run_reflections():
+            tasks = [
+                agent.async_event_reflection(self.env, self.tick)
+                for agent in llm_agents_with_events
+            ]
+            return await asyncio.gather(*tasks, return_exceptions=True)
+
+        results = self._event_loop.run_until_complete(run_reflections())
+
+        # Log results
+        for agent, result in zip(llm_agents_with_events, results):
+            if isinstance(result, Exception):
+                print(f"  - {agent.name}: ERROR - {result}")
+            elif isinstance(result, dict) and not result.get("skipped"):
+                events = result.get("events", [])
+                event_types = [e.get("type", "?") for e in events]
+                updates = result.get("updates_applied", {})
+                print(f"  - {agent.name}: processed {event_types}, updates={len(updates) > 0}")
+
     def _capture_baselines(self) -> None:
         """Capture baseline beliefs/values for all agents at T=0.
-        
+
         This is called before any interactions to establish the pre-interaction baseline.
         Used to prove that value changes emerge from interactions, not pre-existing.
+
+        For LLM agents, also runs the fixed worldview questionnaire (Q1-Q5).
         """
         print(f"[BASELINE] Capturing T=0 baseline for {len(self.agents)} agents...")
-        
+
         baseline_data = []
         for agent in self.agents:
             snapshot = agent.capture_baseline(tick=self.tick)
@@ -578,7 +639,40 @@ class SugarSimulation:
                 "origin_identity": agent.origin_identity,
                 **snapshot
             })
-        
+
+        # Run questionnaire for LLM agents (fixed Q1-Q5 measurement)
+        llm_agents = [a for a in self.agents if isinstance(a, LLMSugarAgent) and a.alive]
+        if llm_agents:
+            print(f"[BASELINE] Running T=0 questionnaire for {len(llm_agents)} LLM agents...")
+
+            async def run_questionnaires():
+                tasks = [agent.async_baseline_questionnaire(self.env, tick=0) for agent in llm_agents]
+                return await asyncio.gather(*tasks, return_exceptions=True)
+
+            results = self._event_loop.run_until_complete(run_questionnaires())
+
+            # Add questionnaire results to baseline data
+            for agent, result in zip(llm_agents, results):
+                if isinstance(result, Exception):
+                    print(f"  - {agent.name}: ERROR - {result}")
+                    continue
+
+                # Find this agent's baseline entry and add questionnaire scores
+                for entry in baseline_data:
+                    if entry["agent_id"] == agent.agent_id:
+                        entry["questionnaire_t0"] = {
+                            "scores": result.get("scores", {}),
+                            "parsed": result.get("parsed", {}),
+                            "raw_response": result.get("raw_response", ""),
+                        }
+                        scores = result.get("scores", {})
+                        print(f"  - {agent.name}: Q1={scores.get('Q1_trust', '?')}, "
+                              f"Q2={scores.get('Q2_cooperation', '?')}, "
+                              f"Q3={scores.get('Q3_fairness', '?')}, "
+                              f"Q4={scores.get('Q4_scarcity', '?')}, "
+                              f"Q5={scores.get('Q5_self_vs_others', '?')}")
+                        break
+
         # Save baseline to file
         import json
         baseline_path = self.logger.run_dir / "baseline_beliefs.json"

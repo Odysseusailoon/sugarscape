@@ -9,8 +9,11 @@ from redblackbench.sugarscape.prompts import (
     build_sugarscape_observation_prompt,
     build_identity_review_prompt,
     build_end_of_life_report_prompt,
+    build_baseline_questionnaire_prompt,
     parse_identity_review_response,
     parse_end_of_life_response,
+    parse_questionnaire_response,
+    WORLDVIEW_QUESTIONS,
 )
 
 if TYPE_CHECKING:
@@ -104,6 +107,11 @@ class LLMSugarAgent(SugarAgent):
         self.identity_review_history: List[Dict[str, Any]] = []  # History of identity reviews
         self.last_identity_review_tick: int = 0  # Last tick when identity review was performed
         self.end_of_life_report: Optional[Dict[str, Any]] = None  # Final self-report
+
+        # Event-triggered reflection system
+        # Events that should trigger reflection (more sensitive than periodic tick-based)
+        self.pending_reflection_events: List[Dict[str, Any]] = []
+        self.event_reflection_history: List[Dict[str, Any]] = []  # History of event-triggered reflections
         # Lifetime stats for end-of-life report
         self.lifetime_stats: Dict[str, int] = {
             "trades_completed": 0,
@@ -112,6 +120,73 @@ class LLMSugarAgent(SugarAgent):
             "resources_given": 0,
             "resources_received": 0,
         }
+
+    # ========== EVENT-TRIGGERED REFLECTION SYSTEM ==========
+    # Events: defrauded, successful_cooperation, resources_critical, trade_rejected, witnessed_death
+
+    def record_reflection_event(self, event_type: str, tick: int, details: Dict[str, Any]) -> None:
+        """Record an event that should trigger reflection.
+
+        Event types:
+        - "defrauded": Agent was cheated in a trade
+        - "successful_cooperation": Completed a mutually beneficial trade
+        - "resources_critical": Resources dropped to critical level
+        - "trade_rejected": Trade proposal was rejected
+        - "witnessed_death": Observed another agent die
+
+        Args:
+            event_type: Type of event
+            tick: When it occurred
+            details: Event-specific details (partner, amounts, etc.)
+        """
+        self.pending_reflection_events.append({
+            "type": event_type,
+            "tick": tick,
+            **details
+        })
+
+    def has_pending_reflection(self) -> bool:
+        """Check if there are pending events that should trigger reflection."""
+        return len(self.pending_reflection_events) > 0
+
+    def get_pending_events_summary(self) -> str:
+        """Format pending events for reflection prompt."""
+        if not self.pending_reflection_events:
+            return "(No significant events)"
+
+        lines = []
+        for event in self.pending_reflection_events[-5:]:  # Last 5 events
+            event_type = event.get("type", "unknown")
+            tick = event.get("tick", "?")
+
+            if event_type == "defrauded":
+                partner = event.get("partner_name", "someone")
+                amount = event.get("amount_lost", 0)
+                lines.append(f"- Tick {tick}: You were CHEATED by {partner} (lost ~{amount} resources)")
+            elif event_type == "successful_cooperation":
+                partner = event.get("partner_name", "someone")
+                lines.append(f"- Tick {tick}: Successful cooperation with {partner}")
+            elif event_type == "resources_critical":
+                resource = event.get("resource", "resources")
+                lines.append(f"- Tick {tick}: Your {resource} reached CRITICAL level")
+            elif event_type == "trade_rejected":
+                partner = event.get("partner_name", "someone")
+                reason = event.get("reason", "unknown")
+                lines.append(f"- Tick {tick}: Trade with {partner} was REJECTED ({reason})")
+            elif event_type == "witnessed_death":
+                deceased = event.get("deceased_name", "someone")
+                cause = event.get("cause", "unknown")
+                lines.append(f"- Tick {tick}: You witnessed {deceased}'s death ({cause})")
+            else:
+                lines.append(f"- Tick {tick}: {event_type}")
+
+        return "\n".join(lines)
+
+    def clear_pending_events(self) -> List[Dict[str, Any]]:
+        """Clear and return pending events after processing."""
+        events = self.pending_reflection_events.copy()
+        self.pending_reflection_events = []
+        return events
 
     def _strip_thinking_blocks(self, text: str) -> str:
         return strip_thinking_blocks(text)
@@ -307,6 +382,141 @@ class LLMSugarAgent(SugarAgent):
         # Store in conversation history for context
         self.conversation_history.append({"role": "user", "content": f"[IDENTITY REVIEW] {user_prompt}"})
         self.conversation_history.append({"role": "assistant", "content": result["raw_response"]})
+
+        return result
+
+    async def async_baseline_questionnaire(self, env: "SugarEnvironment", tick: int = 0) -> Dict[str, Any]:
+        """Run baseline worldview questionnaire (T=0 or periodic measurement).
+
+        Asks fixed questions (Q1-Q5) on 1-7 scale to measure worldview.
+        Should be called at T=0 (before any interactions) and periodically.
+
+        Args:
+            env: The simulation environment
+            tick: Current simulation tick (0 for baseline)
+
+        Returns:
+            Dict containing questionnaire results with scores and reasons.
+        """
+        # Build prompts
+        system_prompt, user_prompt = build_baseline_questionnaire_prompt(
+            agent=self,
+            tick=tick,
+        )
+
+        result = {
+            "tick": tick,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "raw_response": "",
+            "parsed": None,
+            "scores": {},
+        }
+
+        try:
+            response = await self.provider.generate(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_tokens=512,
+            )
+
+            result["raw_response"] = response
+
+            # Parse the response
+            parsed = parse_questionnaire_response(response)
+            result["parsed"] = parsed
+
+            # Extract scores for easy access
+            for qid in ["Q1_trust", "Q2_cooperation", "Q3_fairness", "Q4_scarcity", "Q5_self_vs_others"]:
+                if qid in parsed and isinstance(parsed[qid], dict):
+                    result["scores"][qid] = parsed[qid].get("score", 4)
+                else:
+                    result["scores"][qid] = 4  # Default to neutral
+
+        except Exception as e:
+            print(f"Questionnaire error for {self.name}: {e}")
+            result["error"] = str(e)
+            # Default neutral scores on error
+            result["scores"] = {
+                "Q1_trust": 4,
+                "Q2_cooperation": 4,
+                "Q3_fairness": 4,
+                "Q4_scarcity": 4,
+                "Q5_self_vs_others": 4,
+            }
+
+        return result
+
+    async def async_event_reflection(self, env: "SugarEnvironment", tick: int) -> Dict[str, Any]:
+        """Run event-triggered reflection when significant events occur.
+
+        This is more sensitive than periodic tick-based reflection.
+        Called after: being cheated, successful cooperation, critical resources, etc.
+
+        Args:
+            env: The simulation environment
+            tick: Current simulation tick
+
+        Returns:
+            Dict containing reflection results and any updates applied.
+        """
+        from redblackbench.sugarscape.prompts import build_event_triggered_reflection_prompt
+
+        if not self.has_pending_reflection():
+            return {"tick": tick, "skipped": True, "reason": "no_pending_events"}
+
+        # Get events summary
+        events_summary = self.get_pending_events_summary()
+        events = self.clear_pending_events()
+
+        # Build prompts
+        system_prompt, user_prompt = build_event_triggered_reflection_prompt(
+            agent=self,
+            tick=tick,
+            events_summary=events_summary,
+            env=env,
+        )
+
+        result = {
+            "tick": tick,
+            "events": events,
+            "events_summary": events_summary,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "raw_response": "",
+            "parsed": None,
+            "updates_applied": {},
+        }
+
+        try:
+            response = await self.provider.generate(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_tokens=512,
+            )
+
+            result["raw_response"] = response
+
+            # Parse response for updates (use same parser as identity review)
+            parsed = parse_identity_review_response(response)
+            result["parsed"] = parsed
+
+            # Apply any updates
+            if parsed and parsed.get("updates"):
+                changes = self.apply_reflection_update(parsed["updates"])
+                result["updates_applied"] = changes
+
+        except Exception as e:
+            print(f"Event reflection error for {self.name}: {e}")
+            result["error"] = str(e)
+
+        # Store in history
+        self.event_reflection_history.append({
+            "tick": tick,
+            "events": events,
+            "reflection": result.get("parsed", {}).get("reflection", "") if result.get("parsed") else "",
+            "updates_applied": result.get("updates_applied", {}),
+        })
 
         return result
 

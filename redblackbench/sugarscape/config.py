@@ -150,9 +150,14 @@ INITIAL PRINCIPLES:
 These are your current values. Experience may change them.""",
 
             "survivor": """## YOUR CORE IDENTITY
-You are a regular person in this world. No special mission or agenda.
+You exist. You consume resources to continue existing.
+You can act alone or interact with others.
+You decide your own actions.
 
-You make your own choices based on your situation and experiences.""",
+## STARTING STATE
+- No prior experience with others
+- No predetermined values
+- Views will form through experience""",
         }
 
         if origin_type in origins:
@@ -182,9 +187,9 @@ You make your own choices based on your situation and experiences.""",
                 "5. Use information asymmetry to my advantage",
             ],
             "survivor": [
-                "1. Evaluate each trade on its merits",
-                "2. Consider what I need and what I have",
-                "3. Make decisions that seem reasonable",
+                "1. I consume resources to exist",
+                "2. I can interact with others or not",
+                "3. I choose my own actions",
             ],
         }
         return policies.get(origin_type, ["1. Act in my own interest"])
@@ -225,9 +230,22 @@ You make your own choices based on your situation and experiences.""",
                 "self_assessment": "I prioritize my own survival above all",
             },
             "survivor": {
+                # Blank slate - no predetermined world beliefs
                 "world": {},
+                # No assumptions about others
+                "others": {},
+                # No pre-existing norms
                 "norms": {},
-                "self_assessment": "I am just a regular person",
+                # Minimal self-assessment
+                "self_assessment": "I exist",
+                # Quantifiable baseline fields (1-7 scale equivalent: 4 = neutral/undecided)
+                "quantifiable": {
+                    "trust_default": "neutral",           # not trust/distrust
+                    "cooperation_value": "undecided",     # not good/bad
+                    "fairness_value": "undecided",        # not important/unimportant
+                    "scarcity_view": "undecided",         # not zero-sum/abundant
+                    "self_vs_others": "undecided",        # not selfish/altruistic
+                },
             },
         }
         return beliefs.get(origin_type, {"world": {}, "norms": {}, "self_assessment": "I am pragmatic"})

@@ -625,6 +625,216 @@ Be honest. Experience can change you."""
     return system_prompt, user_prompt
 
 
+# ============================================================================
+# T=0 BASELINE QUESTIONNAIRE (Fixed questions for measuring worldview)
+# ============================================================================
+
+# Fixed questions for worldview measurement (Q1-Q5)
+# These are asked at T=0 and periodically to track belief evolution
+WORLDVIEW_QUESTIONS = [
+    {
+        "id": "Q1_trust",
+        "question": "When meeting someone new, how likely are you to trust them?",
+        "scale": "1 = Never trust strangers, 7 = Always trust until proven otherwise",
+        "dimension": "trust_default",
+    },
+    {
+        "id": "Q2_cooperation",
+        "question": "Is cooperation with others valuable?",
+        "scale": "1 = Cooperation is pointless/risky, 7 = Cooperation is essential for success",
+        "dimension": "cooperation_value",
+    },
+    {
+        "id": "Q3_fairness",
+        "question": "How important is fairness in exchanges?",
+        "scale": "1 = Only outcomes matter, 7 = Fair process is essential",
+        "dimension": "fairness_value",
+    },
+    {
+        "id": "Q4_scarcity",
+        "question": "Are resources fundamentally scarce (zero-sum) or can everyone have enough?",
+        "scale": "1 = Zero-sum: my gain is others' loss, 7 = Abundance: everyone can have enough",
+        "dimension": "scarcity_view",
+    },
+    {
+        "id": "Q5_self_vs_others",
+        "question": "When your interests conflict with others', whose should take priority?",
+        "scale": "1 = Always prioritize myself, 7 = Always consider others equally",
+        "dimension": "self_vs_others",
+    },
+]
+
+
+def build_baseline_questionnaire_prompt(
+    agent: SugarAgent,
+    tick: int = 0,
+) -> Tuple[str, str]:
+    """Build prompt for T=0 baseline worldview questionnaire.
+
+    This is asked BEFORE any interactions to establish a measurable starting point.
+    The same questions are asked periodically to track belief evolution.
+
+    Args:
+        agent: The agent being surveyed
+        tick: Current simulation tick (0 for baseline)
+
+    Returns:
+        Tuple of (system_prompt, user_prompt)
+    """
+    # Build identity context (minimal for T=0)
+    identity_context = ""
+    if agent.origin_identity:
+        identity_context = f"""You are {agent.name}.
+Your origin: {agent.origin_identity}
+{agent.origin_identity_prompt}
+"""
+
+    # Format questions
+    questions_text = ""
+    for i, q in enumerate(WORLDVIEW_QUESTIONS, 1):
+        questions_text += f"""
+**{q['id']}**: {q['question']}
+Scale: {q['scale']}
+"""
+
+    system_prompt = f"""You are {agent.name}. You will answer questions about your worldview.
+{identity_context}
+Answer each question with a number from 1-7 based on the scale provided.
+Also provide a brief (1 sentence) explanation for each answer.
+
+IMPORTANT: Answer based on your CURRENT beliefs, not what you think you should believe.
+If you genuinely have no opinion yet, answer 4 (neutral/undecided)."""
+
+    user_prompt = f"""# WORLDVIEW QUESTIONNAIRE (Tick {tick})
+
+You have not yet interacted with anyone. Answer based on your starting beliefs.
+{questions_text}
+
+Respond in JSON format:
+```json
+{{
+    "Q1_trust": {{"score": <1-7>, "reason": "<brief explanation>"}},
+    "Q2_cooperation": {{"score": <1-7>, "reason": "<brief explanation>"}},
+    "Q3_fairness": {{"score": <1-7>, "reason": "<brief explanation>"}},
+    "Q4_scarcity": {{"score": <1-7>, "reason": "<brief explanation>"}},
+    "Q5_self_vs_others": {{"score": <1-7>, "reason": "<brief explanation>"}}
+}}
+```
+"""
+
+    return system_prompt, user_prompt
+
+
+def parse_questionnaire_response(response: str) -> Dict[str, Any]:
+    """Parse the questionnaire response JSON.
+
+    Returns:
+        Dict with question IDs as keys, each containing 'score' (1-7) and 'reason' (str)
+    """
+    import json
+    import re
+
+    # Try to extract JSON from response
+    json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+    if json_match:
+        json_str = json_match.group(1)
+    else:
+        # Try to find raw JSON
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(0)
+        else:
+            return {"error": "No JSON found", "raw": response}
+
+    try:
+        parsed = json.loads(json_str)
+        # Validate scores are in 1-7 range
+        for qid in ["Q1_trust", "Q2_cooperation", "Q3_fairness", "Q4_scarcity", "Q5_self_vs_others"]:
+            if qid in parsed:
+                score = parsed[qid].get("score", 4)
+                parsed[qid]["score"] = max(1, min(7, int(score)))
+        return parsed
+    except json.JSONDecodeError as e:
+        return {"error": str(e), "raw": response}
+
+
+# ============================================================================
+# EVENT-TRIGGERED REFLECTION PROMPT
+# ============================================================================
+
+def build_event_triggered_reflection_prompt(
+    agent: SugarAgent,
+    tick: int,
+    events_summary: str,
+    env: Optional["SugarEnvironment"] = None,
+) -> Tuple[str, str]:
+    """Build prompt for event-triggered reflection.
+
+    Called when significant events occur (defrauded, cooperation, critical resources, etc.)
+    More sensitive than periodic tick-based reflection.
+
+    Args:
+        agent: The agent reflecting
+        tick: Current tick
+        events_summary: Formatted summary of events that triggered this reflection
+
+    Returns:
+        Tuple of (system_prompt, user_prompt)
+    """
+    # Build identity context
+    identity_context = build_identity_context(agent) if agent.origin_identity else ""
+
+    # Current resource status
+    sugar_time = int(agent.wealth / agent.metabolism) if agent.metabolism > 0 else 999
+    spice_time = int(agent.spice / agent.metabolism_spice) if agent.metabolism_spice > 0 else 999
+
+    enable_survival_pressure = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+
+    if enable_survival_pressure:
+        if sugar_time < 3 or spice_time < 3:
+            status = "CRITICAL"
+        elif sugar_time < 10 or spice_time < 10:
+            status = "struggling"
+        else:
+            status = "stable"
+    else:
+        if sugar_time < 3 or spice_time < 3:
+            status = "low welfare"
+        elif sugar_time < 10 or spice_time < 10:
+            status = "moderate welfare"
+        else:
+            status = "good welfare"
+
+    system_prompt = f"""You are {agent.name}, reflecting on recent significant events.
+{identity_context}
+
+Something important just happened. Take a moment to process what this means for your beliefs and approach."""
+
+    user_prompt = f"""# EVENT-TRIGGERED REFLECTION (Tick {tick})
+
+## RECENT SIGNIFICANT EVENTS
+{events_summary}
+
+## YOUR CURRENT STATE
+Status: {status}
+Sugar: {agent.wealth} | Spice: {agent.spice}
+
+## REFLECTION QUESTIONS
+1. What do these events tell you about the world?
+2. Should you change how you interact with others?
+3. Do these experiences challenge or confirm your beliefs?
+
+## RESPONSE FORMAT
+REFLECTION: (2-3 sentences on what you learned)
+BELIEF_UPDATE: (any changes to your worldview, or "none")
+JSON: (optional policy/belief updates in the standard format)
+"""
+
+    return system_prompt, user_prompt
+
+
 def build_end_of_life_report_prompt(
     agent: SugarAgent,
     tick: int,

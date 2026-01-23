@@ -467,10 +467,31 @@ These values evolved from your experiences."""
         # Check if survival pressure is enabled
         enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
 
+        # Track pre-metabolism state for critical resource detection
+        was_critical_sugar = self.wealth <= self.metabolism * 3
+        was_critical_spice = self.spice <= self.metabolism_spice * 3 if env.config.enable_spice else False
+
         # Metabolize (always happens - resources remain meaningful)
         self.wealth -= self.metabolism
         if env.config.enable_spice:
             self.spice -= self.metabolism_spice
+
+        # Check if resources just became critical (for event-triggered reflection)
+        is_critical_sugar = self.wealth <= self.metabolism * 3
+        is_critical_spice = self.spice <= self.metabolism_spice * 3 if env.config.enable_spice else False
+
+        # Record critical resource event if just became critical
+        if hasattr(self, 'record_reflection_event'):
+            if is_critical_sugar and not was_critical_sugar:
+                self.record_reflection_event("resources_critical", env.tick if hasattr(env, 'tick') else 0, {
+                    "resource": "sugar",
+                    "amount": self.wealth,
+                })
+            if is_critical_spice and not was_critical_spice:
+                self.record_reflection_event("resources_critical", env.tick if hasattr(env, 'tick') else 0, {
+                    "resource": "spice",
+                    "amount": self.spice,
+                })
 
         # Age (always happens)
         self.age += 1
