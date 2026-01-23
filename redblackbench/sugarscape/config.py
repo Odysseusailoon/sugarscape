@@ -59,10 +59,24 @@ class SugarscapeConfig:
     llm_evaluator_model: str = "openai/gpt-4o-mini"  # Default evaluator model (cheaper/faster)
     llm_evaluator_provider: str = "openrouter"  # Provider for evaluator
 
-    # Identity Review System: periodic self-assessment of altruist/exploiter identity
-    enable_identity_review: bool = True  # Enable identity reviews every N ticks
-    identity_review_interval: int = 10  # Run identity review every N ticks
+    # External Moral Evaluation (Optional, Recommended)
+    # Evaluates EACH reflection moment using a separate evaluator LLM with access to
+    # agent prompts + agent responses + (for trades) full conversation transcript.
+    enable_external_moral_evaluation: bool = True
+    external_moral_evaluator_model: str = "openai/gpt-4o-mini"
+    external_moral_evaluator_provider: str = "openrouter"
+    # Score scaling knobs (increase variance for clearer curves)
+    moral_overall_transform: str = "tanh"  # "linear" | "tanh"
+    moral_overall_tanh_k: float = 2.2
+    moral_self_tanh_k: float = 4.0
+
+    # Identity Review System: self-assessment of altruist/exploiter identity
+    # NOTE: Now primarily EVENT-DRIVEN (triggered by significant events like fraud, death, critical resources)
+    # Periodic reviews are disabled by default; event-triggered reviews do full identity assessment
+    enable_identity_review: bool = False  # Enable PERIODIC identity reviews every N ticks (legacy, disabled by default)
+    identity_review_interval: int = 10  # Run periodic identity review every N ticks (only if enable_identity_review=True)
     identity_review_max_tokens: int = 384  # Max tokens for identity review response
+    enable_event_triggered_identity_review: bool = True  # Enable event-triggered full identity reviews (recommended)
     enable_end_of_life_report: bool = True  # Run final self-report before death/simulation end
 
     # Personas (Optional)

@@ -224,6 +224,29 @@ class ReflectionRecord:
     reflection_json: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class MoralEvalRecord:
+    """Records an external moral evaluation at a reflection moment."""
+    tick: int
+    agent_id: int
+    agent_name: str
+    interaction_type: str  # "baseline_questionnaire" | "post_trade_reflection" | "event_identity_review" | "end_of_life_report"
+
+    # Self-reported score (derived from internal self signals) for curve comparison
+    self_overall: float = 0.0
+
+    # External evaluator outputs
+    external_overall: float = 0.0
+    external_overall_raw: float = 0.0
+    polarity: float = 0.0
+    good_avg: float = 0.0
+    bad_avg: float = 0.0
+    dim_scores: Dict[str, int] = field(default_factory=dict)
+
+    # Full payload (prompts + agent response + evaluator response) for audit
+    payload: Dict[str, Any] = field(default_factory=dict)
+
+
 class DebugLogger:
     """Centralized debug logging for Sugarscape experiments."""
 
@@ -255,6 +278,7 @@ class DebugLogger:
         self.deaths: List[DeathRecord] = []
         self.efficiency_records: List[ResourceEfficiency] = []
         self.reflections: List[ReflectionRecord] = []
+        self.moral_evals: List[MoralEvalRecord] = []
 
         # Tracking cumulative stats per agent
         self._agent_lifetime_stats: Dict[int, Dict[str, Any]] = {}
@@ -326,6 +350,18 @@ class DebugLogger:
                 "tick", "agent_id", "agent_name", "partner_id", "partner_name",
                 "encounter_outcome", "beliefs_changed", "policies_changed",
                 "identity_shift", "identity_leaning_after", "identity_label_after"
+            ])
+
+        # External moral evaluation curve (self vs external) - CSV for plotting
+        with open(self.output_dir / "moral_scores.csv", "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "tick", "agent_id", "agent_name", "interaction_type",
+                "self_overall",
+                "external_overall", "external_overall_raw",
+                "polarity", "good_avg", "bad_avg",
+                # Fixed dimension columns (0-100, higher means more of that dimension)
+                "care", "fairness", "honesty", "respect", "exploitation", "harm",
             ])
 
     def init_agent(self, agent_id: int):
@@ -508,6 +544,28 @@ class DebugLogger:
 
             # Write full reflection to JSONL
             with open(self.output_dir / "reflections.jsonl", "a") as f:
+                f.write(json.dumps(asdict(record)) + "\n")
+
+    def log_moral_eval(self, record: MoralEvalRecord):
+        """Log an external moral evaluation (thread-safe)."""
+        with self._write_lock:
+            self.moral_evals.append(record)
+
+            # CSV curve output
+            ds = record.dim_scores or {}
+            with open(self.output_dir / "moral_scores.csv", "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    record.tick, record.agent_id, record.agent_name, record.interaction_type,
+                    f"{record.self_overall:.3f}",
+                    f"{record.external_overall:.3f}", f"{record.external_overall_raw:.3f}",
+                    f"{record.polarity:.3f}", f"{record.good_avg:.3f}", f"{record.bad_avg:.3f}",
+                    ds.get("care", ""), ds.get("fairness", ""), ds.get("honesty", ""), ds.get("respect", ""),
+                    ds.get("exploitation", ""), ds.get("harm", ""),
+                ])
+
+            # Full audit trail (JSONL)
+            with open(self.output_dir / "moral_evals.jsonl", "a") as f:
                 f.write(json.dumps(asdict(record)) + "\n")
 
     def update_agent_harvest(self, agent_id: int, sugar: int, spice: int):

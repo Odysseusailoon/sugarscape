@@ -25,7 +25,15 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        identity_distribution: dict = None,
                        enable_survival_pressure: bool = True,
                        social_memory_visible: bool = True,
-                       experiment_name_suffix: str = ""):
+                       experiment_name_suffix: str = "",
+                       # LLM Evaluation options
+                       enable_llm_evaluation: bool = True,
+                       llm_evaluator_model: str = "openai/gpt-4o-mini",
+                       llm_evaluator_provider: str = "openrouter",
+                       # Resource abundance options
+                       initial_wealth_min: int = None,
+                       initial_wealth_max: int = None,
+                       growback_rate: int = None):
     """Run a single experiment with a specific goal preset.
     
     Ablation flags:
@@ -68,6 +76,10 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         # Ablation flags
         enable_survival_pressure=enable_survival_pressure,
         social_memory_visible=social_memory_visible,
+        # LLM Evaluation settings
+        enable_llm_evaluation=enable_llm_evaluation,
+        llm_evaluator_model=llm_evaluator_model,
+        llm_evaluator_provider=llm_evaluator_provider,
     )
 
     # Print ablation status
@@ -75,6 +87,12 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         print("⚠️ ABLATION: Survival pressure DISABLED (agents won't die from starvation)")
     if not social_memory_visible:
         print("⚠️ ABLATION: Social memory DISABLED (no trade history, reputation hidden)")
+    
+    # Print evaluation status
+    if enable_llm_evaluation:
+        print(f"✓ LLM Evaluation ENABLED (model: {llm_evaluator_model})")
+    else:
+        print("⚠️ LLM Evaluation DISABLED (behavioral metrics only)")
 
     if use_mixed_identity or identity_distribution:
         config.enable_origin_identity = True
@@ -102,6 +120,19 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         config.max_sugar_capacity = 4
         config.spice_growback_rate = 0
         config.max_spice_capacity = 4
+
+    # Override resource settings if specified
+    if initial_wealth_min is not None and initial_wealth_max is not None:
+        config.initial_wealth_range = (initial_wealth_min, initial_wealth_max)
+        config.initial_spice_range = (initial_wealth_min, initial_wealth_max)
+        print(f"✓ Initial resources: {initial_wealth_min}-{initial_wealth_max} (sugar & spice)")
+    
+    if growback_rate is not None:
+        config.sugar_growback_rate = growback_rate
+        config.spice_growback_rate = growback_rate
+        config.max_sugar_capacity = max(6, growback_rate * 2)  # Scale capacity with rate
+        config.max_spice_capacity = max(6, growback_rate * 2)
+        print(f"✓ Growback rate: {growback_rate} (capacity: {config.max_sugar_capacity})")
 
     print(f"Goal: {goal_preset}")
     print(f"Goal Prompt: {config.llm_goal_prompt[:100]}...")
@@ -280,6 +311,23 @@ def parse_args():
                         help="ABLATION: Disable social memory (no trade history, reputation hidden)")
     parser.add_argument("--experiment-suffix", type=str, default="",
                         help="Suffix to add to experiment name (for ablation labeling)")
+    
+    # LLM Evaluation options
+    parser.add_argument("--no-llm-evaluation", action="store_true",
+                        help="Disable independent LLM evaluation (saves API costs)")
+    parser.add_argument("--evaluator-model", type=str, default="openai/gpt-4o-mini",
+                        help="Model for independent evaluation (default: openai/gpt-4o-mini)")
+    parser.add_argument("--evaluator-provider", type=str, default="openrouter",
+                        choices=["openrouter", "vllm"],
+                        help="Provider for evaluator model (default: openrouter)")
+    
+    # Resource abundance options
+    parser.add_argument("--initial-wealth-min", type=int, default=None,
+                        help="Minimum initial sugar/spice per agent (default: 5)")
+    parser.add_argument("--initial-wealth-max", type=int, default=None,
+                        help="Maximum initial sugar/spice per agent (default: 25)")
+    parser.add_argument("--growback-rate", type=int, default=None,
+                        help="Resource growback rate per tick (higher = more abundant)")
 
     return parser.parse_args()
 
@@ -358,7 +406,13 @@ def main():
                           args.use_mixed_identity, identity_distribution,
                           enable_survival_pressure=not args.no_survival_pressure,
                           social_memory_visible=not args.no_social_memory,
-                          experiment_name_suffix=args.experiment_suffix)
+                          experiment_name_suffix=args.experiment_suffix,
+                          enable_llm_evaluation=not args.no_llm_evaluation,
+                          llm_evaluator_model=args.evaluator_model,
+                          llm_evaluator_provider=args.evaluator_provider,
+                          initial_wealth_min=args.initial_wealth_min,
+                          initial_wealth_max=args.initial_wealth_max,
+                          growback_rate=args.growback_rate)
     else:
         # Run comparison
         compare_goals(args.goals, args.ticks, args.seed, model,

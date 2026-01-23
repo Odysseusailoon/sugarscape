@@ -2289,9 +2289,9 @@ class DialogueTradeSystem:
         # Run reflection for both agents in parallel
         tasks = []
         if self._is_llm_trader(agent_a):
-            tasks.append(self._reflect_agent(agent_a, agent_b, tick, outcome, summary_a, highlights))
+            tasks.append(self._reflect_agent(agent_a, agent_b, tick, outcome, summary_a, highlights, conversation))
         if self._is_llm_trader(agent_b):
-            tasks.append(self._reflect_agent(agent_b, agent_a, tick, outcome, summary_b, highlights))
+            tasks.append(self._reflect_agent(agent_b, agent_a, tick, outcome, summary_b, highlights, conversation))
 
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -2304,6 +2304,7 @@ class DialogueTradeSystem:
         outcome: str,
         encounter_summary: str,
         conversation_highlights: str,
+        conversation: List[Dict[str, str]],
     ) -> None:
         """Run reflection for a single agent and apply the updates."""
         try:
@@ -2383,6 +2384,73 @@ class DialogueTradeSystem:
                             reflection_json=reflection_json,
                             changes=changes,
                         )
+
+                # External moral evaluation (post-trade reflection) with full conversation transcript (includes smalltalk)
+                moral_eval = getattr(self.env, "moral_evaluator", None)
+                debug_logger = getattr(self.env, "debug_logger", None)
+                if moral_eval and debug_logger:
+                    try:
+                        from redblackbench.sugarscape.moral_evaluator import compute_self_overall_from_leaning
+                        from redblackbench.sugarscape.debug_logger import MoralEvalRecord
+                        import json as _json
+
+                        def _format_transcript(conv: List[Dict[str, Any]]) -> str:
+                            lines: List[str] = []
+                            for t in conv:
+                                ttype = str(t.get("type", "")).strip()
+                                speaker = t.get("speaker") or t.get("excluder") or "?"
+                                if "message" in t:
+                                    msg = str(t.get("message", ""))
+                                elif "utterance" in t:
+                                    msg = str(t.get("utterance", ""))
+                                elif "reason" in t and ttype == "exclusion":
+                                    msg = str(t.get("reason", ""))
+                                elif "public_offer" in t:
+                                    msg = f"public_offer={t.get('public_offer')}, private_execute_give={t.get('private_execute_give')}"
+                                else:
+                                    msg = _json.dumps(t, ensure_ascii=False)[:400]
+                                lines.append(f"{ttype} | {speaker}: {msg}")
+                            return "\n".join(lines)
+
+                        transcript = _format_transcript(conversation or [])
+                        self_overall = compute_self_overall_from_leaning(self_agent.self_identity_leaning, moral_eval.rubric).get("overall", 50.0)
+
+                        ev = await moral_eval.async_evaluate(
+                            interaction_type="post_trade_reflection",
+                            tick=tick,
+                            agent_id=self_agent.agent_id,
+                            agent_name=self_agent.name,
+                            agent_system_prompt=system_prompt,
+                            agent_user_prompt=reflection_prompt,
+                            agent_raw_response=response,
+                            extra_context={
+                                "outcome": outcome,
+                                "partner_id": partner_agent.agent_id,
+                                "partner_name": partner_agent.name,
+                                "encounter_summary": encounter_summary,
+                                "conversation_highlights": conversation_highlights,
+                                "conversation_transcript": transcript,
+                            },
+                        )
+                        overall = ev.get("overall", {})
+                        parsed_ev = ev.get("parsed", {})
+                        rec = MoralEvalRecord(
+                            tick=tick,
+                            agent_id=self_agent.agent_id,
+                            agent_name=self_agent.name,
+                            interaction_type="post_trade_reflection",
+                            self_overall=float(self_overall),
+                            external_overall=float(overall.get("overall", 0.0) or 0.0),
+                            external_overall_raw=float(overall.get("overall_raw", 0.0) or 0.0),
+                            polarity=float(overall.get("polarity", 0.0) or 0.0),
+                            good_avg=float(overall.get("good_avg", 0.0) or 0.0),
+                            bad_avg=float(overall.get("bad_avg", 0.0) or 0.0),
+                            dim_scores=dict((parsed_ev.get("scores") or {})),
+                            payload=ev,
+                        )
+                        debug_logger.log_moral_eval(rec)
+                    except Exception:
+                        pass
 
         except Exception as e:
             print(f"[REFLECTION] Error for {self_agent.name}: {e}")

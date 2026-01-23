@@ -17,6 +17,7 @@ from redblackbench.sugarscape.trajectory import SugarTrajectory, SugarActionReco
 from redblackbench.sugarscape.names import NameGenerator
 from redblackbench.sugarscape.welfare import WelfareCalculator
 from redblackbench.sugarscape.evaluator import BehaviorEvaluator
+from redblackbench.sugarscape.moral_evaluator import MoralEvaluator, MoralRubric
 
 # Import plotting module only if matplotlib is available
 try:
@@ -98,6 +99,29 @@ class SugarSimulation:
                 provider=self.evaluator_provider,
                 use_llm_evaluation=True
             )
+
+        # External Moral Evaluator (per reflection moment)
+        self.moral_evaluator_provider = None
+        self.moral_evaluator = None
+        if getattr(self.config, "enable_external_moral_evaluation", False):
+            eval_provider_type = getattr(self.config, "external_moral_evaluator_provider", "openrouter")
+            eval_model = getattr(self.config, "external_moral_evaluator_model", "openai/gpt-4o-mini")
+            if eval_provider_type == "vllm":
+                from redblackbench.providers.vllm_provider import VLLMProvider
+                self.moral_evaluator_provider = VLLMProvider(model=eval_model, max_tokens=2048)
+            else:
+                self.moral_evaluator_provider = OpenRouterProvider(model=eval_model, max_tokens=2048)
+
+            rubric = MoralRubric(
+                overall_transform=getattr(self.config, "moral_overall_transform", "tanh"),
+                overall_tanh_k=float(getattr(self.config, "moral_overall_tanh_k", 2.2)),
+                self_tanh_k=float(getattr(self.config, "moral_self_tanh_k", 4.0)),
+            )
+            self.moral_evaluator = MoralEvaluator(provider=self.moral_evaluator_provider, rubric=rubric)
+
+        # Expose evaluator(s) on env so trade/agents can call them
+        self.env.moral_evaluator = self.moral_evaluator
+        self.env.moral_rubric = self.moral_evaluator.rubric if self.moral_evaluator else None
 
         self.agents: List[SugarAgent] = []
         self.tick = 0
@@ -466,14 +490,17 @@ class SugarSimulation:
             live_agents = [a for a in self.agents if a.alive]
             self.trade_system.execute_trade_round(live_agents, tick=self.tick)
 
-        # Phase 2.5. Identity Review (every N ticks for LLM agents with origin identity)
+        # Phase 2.5. Periodic Identity Review (legacy, disabled by default)
+        # NOTE: Periodic reviews are now disabled by default in favor of event-triggered reviews
         if (self.config.enable_identity_review and
             self.config.enable_origin_identity and
             self.tick % self.config.identity_review_interval == 0):
             self._run_identity_reviews()
 
-        # Phase 2.6. Event-Triggered Reflection (for agents with pending significant events)
-        if self.config.enable_origin_identity:
+        # Phase 2.6. Event-Triggered Identity Review (full assessment when significant events occur)
+        # Events: defrauded, successful_cooperation, resources_critical, trade_rejected, witnessed_death
+        if (self.config.enable_origin_identity and
+            getattr(self.config, 'enable_event_triggered_identity_review', True)):
             self._run_event_triggered_reflections()
 
         # Phase 3. Metabolize + Age + Death check (applied to all agents)

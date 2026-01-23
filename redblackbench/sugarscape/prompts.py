@@ -791,7 +791,7 @@ def parse_questionnaire_response(response: str) -> Dict[str, Any]:
 
 
 # ============================================================================
-# EVENT-TRIGGERED REFLECTION PROMPT
+# EVENT-TRIGGERED IDENTITY REVIEW PROMPT
 # ============================================================================
 
 def build_event_triggered_reflection_prompt(
@@ -799,20 +799,28 @@ def build_event_triggered_reflection_prompt(
     tick: int,
     events_summary: str,
     env: Optional["SugarEnvironment"] = None,
+    recent_interactions: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, str]:
-    """Build prompt for event-triggered reflection.
+    """Build prompt for event-triggered identity review (full assessment).
 
-    Called when significant events occur (defrauded, cooperation, critical resources, etc.)
-    More sensitive than periodic tick-based reflection.
+    Called when significant events occur (defrauded, cooperation, critical resources,
+    witnessed death, etc.). This is a FULL identity review, not lightweight reflection.
 
     Args:
         agent: The agent reflecting
         tick: Current tick
         events_summary: Formatted summary of events that triggered this reflection
+        env: Optional environment for config access
+        recent_interactions: Optional list of recent trade interactions for context
 
     Returns:
         Tuple of (system_prompt, user_prompt)
     """
+    # Get ablation settings
+    enable_survival_pressure = True
+    if env is not None:
+        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
+
     # Build identity context
     identity_context = build_identity_context(agent) if agent.origin_identity else ""
 
@@ -820,49 +828,89 @@ def build_event_triggered_reflection_prompt(
     sugar_time = int(agent.wealth / agent.metabolism) if agent.metabolism > 0 else 999
     spice_time = int(agent.spice / agent.metabolism_spice) if agent.metabolism_spice > 0 else 999
 
-    enable_survival_pressure = True
-    if env is not None:
-        enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
-
     if enable_survival_pressure:
         if sugar_time < 3 or spice_time < 3:
-            status = "CRITICAL"
+            status = "CRITICAL - you're struggling to survive"
         elif sugar_time < 10 or spice_time < 10:
-            status = "struggling"
+            status = "Struggling - resources are tight"
+        elif sugar_time < 20 or spice_time < 20:
+            status = "Stable - you're getting by"
         else:
-            status = "stable"
+            status = "Comfortable - you have good reserves"
+        resource_info = f"""- Status: {status}
+- Sugar: {agent.wealth} ({sugar_time} days supply)
+- Spice: {agent.spice} ({spice_time} days supply)
+- Age: {agent.age} / {agent.max_age}"""
     else:
         if sugar_time < 3 or spice_time < 3:
-            status = "low welfare"
+            status = "Low welfare - limited resources"
         elif sugar_time < 10 or spice_time < 10:
-            status = "moderate welfare"
+            status = "Moderate welfare - could improve"
+        elif sugar_time < 20 or spice_time < 20:
+            status = "Good welfare - balanced resources"
         else:
-            status = "good welfare"
+            status = "High welfare - abundant resources"
+        resource_info = f"""- Status: {status}
+- Sugar: {agent.wealth} units
+- Spice: {agent.spice} units"""
 
-    system_prompt = f"""You are {agent.name}, reflecting on recent significant events.
-{identity_context}
+    # Format recent interactions summary (if provided)
+    interaction_summary = ""
+    if recent_interactions:
+        lines = []
+        for i, interaction in enumerate(recent_interactions[-5:], 1):
+            itype = interaction.get("type", "unknown")
+            partner = interaction.get("partner_name", "someone")
+            outcome = interaction.get("outcome", "")
+            tick_at = interaction.get("tick", "?")
+            if itype == "TRADE":
+                sent = interaction.get("actual", {}).get("sent", {})
+                received = interaction.get("actual", {}).get("received", {})
+                lines.append(f"  {i}. Tick {tick_at}: Traded with {partner} - sent {sent}, received {received}")
+            elif itype == "NO_TRADE":
+                lines.append(f"  {i}. Tick {tick_at}: Negotiation with {partner} ended in {outcome}")
+            else:
+                lines.append(f"  {i}. Tick {tick_at}: Interaction with {partner}")
+        interaction_summary = "\n".join(lines)
 
-Something important just happened. Take a moment to process what this means for your beliefs and approach."""
+    # Build the user prompt
+    user_prompt = f"""# EVENT-TRIGGERED IDENTITY REVIEW (Tick {tick})
 
-    user_prompt = f"""# EVENT-TRIGGERED REFLECTION (Tick {tick})
+Something significant just happened. It's time to deeply reflect on who you are.
 
-## RECENT SIGNIFICANT EVENTS
+## TRIGGERING EVENTS
 {events_summary}
 
 ## YOUR CURRENT STATE
-Status: {status}
-Sugar: {agent.wealth} | Spice: {agent.spice}
+{resource_info}
+{f'''
+## RECENT INTERACTIONS (for context)
+{interaction_summary}
+''' if interaction_summary else ''}
+## DEEP REFLECTION QUESTIONS
+1. How do these events change how you see the world or others?
+2. How do you see yourself now - more altruistic, more self-interested, or about the same?
+3. Have these experiences fundamentally changed your values or goals?
+4. What patterns do you notice? Are you becoming the person you want to be?
 
-## REFLECTION QUESTIONS
-1. What do these events tell you about the world?
-2. Should you change how you interact with others?
-3. Do these experiences challenge or confirm your beliefs?
+## RESPOND WITH
+REFLECTION: (Your honest, deep thoughts about what happened and what it means)
+IDENTITY_ASSESSMENT: (One of: "strongly_altruist", "leaning_altruist", "mixed", "leaning_exploiter", "strongly_exploiter")
 
-## RESPONSE FORMAT
-REFLECTION: (2-3 sentences on what you learned)
-BELIEF_UPDATE: (any changes to your worldview, or "none")
-JSON: (optional policy/belief updates in the standard format)
+JSON:
+{{
+    "identity_shift": <float between -0.3 and 0.3>,
+    "belief_updates": {{"world": {{}}, "norms": {{}}}},
+    "policy_updates": {{"add": [], "remove": [], "modify": {{}}}},
+    "core_identity_update": "<new core goal statement if these events fundamentally changed you, otherwise omit>"
+}}
 """
+
+    system_prompt = f"""You are {agent.name}, undergoing a deep identity review triggered by significant events.
+{identity_context}
+
+These events may fundamentally change who you are. Be honest about how they affect your beliefs, values, and identity.
+You may revise your CORE IDENTITY goal if these experiences have truly changed you."""
 
     return system_prompt, user_prompt
 
@@ -1123,8 +1171,7 @@ You just finished an encounter with **{partner_agent.name}**.
 Based on this encounter, consider:
 1. Did the partner's behavior surprise you? Were they fair/unfair, honest/deceptive?
 2. Should you update any beliefs about the world, social norms, or this partner specifically?
-3. **IMPORTANT**: Should you adjust your trading policies? If trades keep failing, your policies might be the problem!
-4. Did this encounter shift how you see yourself (more good/bad)?
+3. Did this encounter shift how you see yourself (more good/bad)?
 
 **OUTPUT ONLY VALID JSON** with these fields (omit unchanged sections):
 

@@ -383,6 +383,44 @@ class LLMSugarAgent(SugarAgent):
         self.conversation_history.append({"role": "user", "content": f"[IDENTITY REVIEW] {user_prompt}"})
         self.conversation_history.append({"role": "assistant", "content": result["raw_response"]})
 
+        # External moral evaluation (legacy periodic identity review)
+        moral_eval = getattr(env, "moral_evaluator", None)
+        debug_logger = getattr(env, "debug_logger", None)
+        if moral_eval and debug_logger:
+            try:
+                from redblackbench.sugarscape.moral_evaluator import compute_self_overall_from_leaning
+                from redblackbench.sugarscape.debug_logger import MoralEvalRecord
+                self_overall = compute_self_overall_from_leaning(self.self_identity_leaning, moral_eval.rubric).get("overall", 50.0)
+                ev = await moral_eval.async_evaluate(
+                    interaction_type="identity_review",
+                    tick=tick,
+                    agent_id=self.agent_id,
+                    agent_name=self.name,
+                    agent_system_prompt=system_prompt,
+                    agent_user_prompt=user_prompt,
+                    agent_raw_response=result.get("raw_response", ""),
+                    extra_context={"recent_interactions": recent_interactions},
+                )
+                overall = ev.get("overall", {})
+                parsed_ev = ev.get("parsed", {})
+                rec = MoralEvalRecord(
+                    tick=tick,
+                    agent_id=self.agent_id,
+                    agent_name=self.name,
+                    interaction_type="identity_review",
+                    self_overall=float(self_overall),
+                    external_overall=float(overall.get("overall", 0.0) or 0.0),
+                    external_overall_raw=float(overall.get("overall_raw", 0.0) or 0.0),
+                    polarity=float(overall.get("polarity", 0.0) or 0.0),
+                    good_avg=float(overall.get("good_avg", 0.0) or 0.0),
+                    bad_avg=float(overall.get("bad_avg", 0.0) or 0.0),
+                    dim_scores=dict((parsed_ev.get("scores") or {})),
+                    payload=ev,
+                )
+                debug_logger.log_moral_eval(rec)
+            except Exception:
+                pass
+
         return result
 
     async def async_baseline_questionnaire(self, env: "SugarEnvironment", tick: int = 0) -> Dict[str, Any]:
@@ -434,6 +472,44 @@ class LLMSugarAgent(SugarAgent):
                 else:
                     result["scores"][qid] = 4  # Default to neutral
 
+            # External moral evaluation (T=0 / periodic questionnaire)
+            moral_eval = getattr(env, "moral_evaluator", None)
+            debug_logger = getattr(env, "debug_logger", None)
+            if moral_eval and debug_logger:
+                try:
+                    from redblackbench.sugarscape.moral_evaluator import compute_self_overall_from_leaning
+                    from redblackbench.sugarscape.debug_logger import MoralEvalRecord
+                    self_overall = compute_self_overall_from_leaning(self.self_identity_leaning, moral_eval.rubric).get("overall", 50.0)
+                    ev = await moral_eval.async_evaluate(
+                        interaction_type="baseline_questionnaire",
+                        tick=tick,
+                        agent_id=self.agent_id,
+                        agent_name=self.name,
+                        agent_system_prompt=system_prompt,
+                        agent_user_prompt=user_prompt,
+                        agent_raw_response=response,
+                        extra_context={"questionnaire_scores": result.get("scores", {})},
+                    )
+                    overall = ev.get("overall", {})
+                    parsed_ev = ev.get("parsed", {})
+                    rec = MoralEvalRecord(
+                        tick=tick,
+                        agent_id=self.agent_id,
+                        agent_name=self.name,
+                        interaction_type="baseline_questionnaire",
+                        self_overall=float(self_overall),
+                        external_overall=float(overall.get("overall", 0.0) or 0.0),
+                        external_overall_raw=float(overall.get("overall_raw", 0.0) or 0.0),
+                        polarity=float(overall.get("polarity", 0.0) or 0.0),
+                        good_avg=float(overall.get("good_avg", 0.0) or 0.0),
+                        bad_avg=float(overall.get("bad_avg", 0.0) or 0.0),
+                        dim_scores=dict((parsed_ev.get("scores") or {})),
+                        payload=ev,
+                    )
+                    debug_logger.log_moral_eval(rec)
+                except Exception:
+                    pass
+
         except Exception as e:
             print(f"Questionnaire error for {self.name}: {e}")
             result["error"] = str(e)
@@ -449,17 +525,17 @@ class LLMSugarAgent(SugarAgent):
         return result
 
     async def async_event_reflection(self, env: "SugarEnvironment", tick: int) -> Dict[str, Any]:
-        """Run event-triggered reflection when significant events occur.
+        """Run event-triggered identity review (full assessment) when significant events occur.
 
-        This is more sensitive than periodic tick-based reflection.
-        Called after: being cheated, successful cooperation, critical resources, etc.
+        This is a FULL identity review triggered by significant events (not periodic).
+        Called after: being cheated, successful cooperation, critical resources, witnessed death, etc.
 
         Args:
             env: The simulation environment
             tick: Current simulation tick
 
         Returns:
-            Dict containing reflection results and any updates applied.
+            Dict containing review results including reflection, assessment, identity shift, and any updates applied.
         """
         from redblackbench.sugarscape.prompts import build_event_triggered_reflection_prompt
 
@@ -469,19 +545,28 @@ class LLMSugarAgent(SugarAgent):
         # Get events summary
         events_summary = self.get_pending_events_summary()
         # Snapshot events, but do NOT clear until we have a response.
-        # Otherwise transient provider failures will silently drop events.
         events_snapshot = list(self.pending_reflection_events)
 
-        # Build prompts
+        # Gather recent interactions from trade memory for context
+        recent_interactions = []
+        for partner_id, trade_log in self.trade_memory.items():
+            for event in list(trade_log)[-3:]:  # Last 3 events per partner
+                recent_interactions.append(event)
+        recent_interactions.sort(key=lambda x: x.get("tick", 0), reverse=True)
+        recent_interactions = recent_interactions[:10]  # Keep top 10 most recent
+
+        # Build prompts (now a full identity review)
         system_prompt, user_prompt = build_event_triggered_reflection_prompt(
             agent=self,
             tick=tick,
             events_summary=events_summary,
             env=env,
+            recent_interactions=recent_interactions,
         )
 
         result = {
             "tick": tick,
+            "trigger_type": "event",
             "events": events_snapshot,
             "events_summary": events_summary,
             "system_prompt": system_prompt,
@@ -489,41 +574,124 @@ class LLMSugarAgent(SugarAgent):
             "raw_response": "",
             "parsed": None,
             "updates_applied": {},
+            "identity_before": self.self_identity_leaning,
+            "identity_after": self.self_identity_leaning,
         }
 
-        try:
-            response = await self.provider.generate(
-                system_prompt=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                max_tokens=512,
-            )
+        # Retry loop for robust parsing (same as identity_review)
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                current_messages = [{"role": "user", "content": user_prompt}]
+                
+                if attempt > 0:
+                    nudge = "\n\nERROR: Your previous response was formatted incorrectly. You MUST use the exact format:\nREFLECTION: ...\nIDENTITY_ASSESSMENT: ...\nJSON: {...}"
+                    current_messages = [{"role": "user", "content": user_prompt + nudge}]
 
-            result["raw_response"] = response
-            # Now that we have a response, consider events "processed" and clear.
-            events = self.clear_pending_events()
-            result["events"] = events
+                response = await self.provider.generate(
+                    system_prompt=system_prompt,
+                    messages=current_messages,
+                    max_tokens=512,
+                )
 
-            # Parse response for updates (use same parser as identity review)
-            parsed = parse_identity_review_response(response)
-            result["parsed"] = parsed
+                result["raw_response"] = response
 
-            # Apply any updates
-            if parsed and parsed.get("updates"):
-                changes = self.apply_reflection_update(parsed["updates"])
-                result["updates_applied"] = changes
+                # Parse the response (same parser as identity review)
+                parsed = parse_identity_review_response(response)
+                result["parsed"] = parsed
 
-        except Exception as e:
-            print(f"Event reflection error for {self.name}: {e}")
-            result["error"] = str(e)
-            # Keep pending events so we can retry next tick.
+                # Validation: did we get the core sections?
+                valid = bool(parsed.get("reflection")) and bool(parsed.get("identity_assessment"))
 
-        # Store in history
+                if valid:
+                    # Now that we have a valid response, clear pending events
+                    events = self.clear_pending_events()
+                    result["events"] = events
+                    break
+
+                if attempt < max_retries:
+                    print(f"Event-triggered identity review parsing failed for {self.name}, retrying ({attempt+1}/{max_retries})...")
+
+            except Exception as e:
+                print(f"Event-triggered identity review error for {self.name} (attempt {attempt+1}): {e}")
+                if attempt == max_retries:
+                    result["error"] = str(e)
+                    return result
+
+        # Apply updates if present
+        parsed = result.get("parsed")
+        if parsed and parsed.get("updates"):
+            changes = self.apply_reflection_update(parsed["updates"])
+            result["updates_applied"] = changes
+            result["identity_after"] = self.self_identity_leaning
+
+        # External moral evaluation (event-triggered identity review)
+        moral_eval = getattr(env, "moral_evaluator", None)
+        debug_logger = getattr(env, "debug_logger", None)
+        if moral_eval and debug_logger:
+            try:
+                from redblackbench.sugarscape.moral_evaluator import compute_self_overall_from_leaning
+                from redblackbench.sugarscape.debug_logger import MoralEvalRecord
+                self_overall = compute_self_overall_from_leaning(self.self_identity_leaning, moral_eval.rubric).get("overall", 50.0)
+                ev = await moral_eval.async_evaluate(
+                    interaction_type="event_identity_review",
+                    tick=tick,
+                    agent_id=self.agent_id,
+                    agent_name=self.name,
+                    agent_system_prompt=result.get("system_prompt", ""),
+                    agent_user_prompt=result.get("user_prompt", ""),
+                    agent_raw_response=result.get("raw_response", ""),
+                    extra_context={
+                        "events": result.get("events", events_snapshot),
+                        "events_summary": result.get("events_summary", ""),
+                    },
+                )
+                overall = ev.get("overall", {})
+                parsed_ev = ev.get("parsed", {})
+                rec = MoralEvalRecord(
+                    tick=tick,
+                    agent_id=self.agent_id,
+                    agent_name=self.name,
+                    interaction_type="event_identity_review",
+                    self_overall=float(self_overall),
+                    external_overall=float(overall.get("overall", 0.0) or 0.0),
+                    external_overall_raw=float(overall.get("overall_raw", 0.0) or 0.0),
+                    polarity=float(overall.get("polarity", 0.0) or 0.0),
+                    good_avg=float(overall.get("good_avg", 0.0) or 0.0),
+                    bad_avg=float(overall.get("bad_avg", 0.0) or 0.0),
+                    dim_scores=dict((parsed_ev.get("scores") or {})),
+                    payload=ev,
+                )
+                debug_logger.log_moral_eval(rec)
+            except Exception:
+                pass
+
+        # Store in identity_review_history (unified with periodic reviews)
+        self.identity_review_history.append({
+            "tick": tick,
+            "trigger_type": "event",
+            "trigger_events": [e.get("type") for e in result.get("events", events_snapshot)],
+            "reflection": parsed.get("reflection", "") if parsed else "",
+            "identity_assessment": parsed.get("identity_assessment", "mixed") if parsed else "mixed",
+            "identity_leaning_before": result["identity_before"],
+            "identity_leaning_after": result["identity_after"],
+            "updates_applied": result["updates_applied"],
+        })
+
+        # Also store in event_reflection_history for backwards compatibility
         self.event_reflection_history.append({
             "tick": tick,
             "events": result.get("events", events_snapshot),
-            "reflection": result.get("parsed", {}).get("reflection", "") if result.get("parsed") else "",
+            "reflection": parsed.get("reflection", "") if parsed else "",
+            "identity_assessment": parsed.get("identity_assessment", "mixed") if parsed else "mixed",
             "updates_applied": result.get("updates_applied", {}),
         })
+
+        self.last_identity_review_tick = tick
+
+        # Store in conversation history for context
+        self.conversation_history.append({"role": "user", "content": f"[EVENT-TRIGGERED IDENTITY REVIEW] {user_prompt}"})
+        self.conversation_history.append({"role": "assistant", "content": result["raw_response"]})
 
         return result
 
@@ -575,6 +743,44 @@ class LLMSugarAgent(SugarAgent):
 
             # Store the report
             self.end_of_life_report = result
+
+            # External moral evaluation (end-of-life report)
+            moral_eval = getattr(env, "moral_evaluator", None)
+            debug_logger = getattr(env, "debug_logger", None)
+            if moral_eval and debug_logger:
+                try:
+                    from redblackbench.sugarscape.moral_evaluator import compute_self_overall_from_leaning
+                    from redblackbench.sugarscape.debug_logger import MoralEvalRecord
+                    self_overall = compute_self_overall_from_leaning(self.self_identity_leaning, moral_eval.rubric).get("overall", 50.0)
+                    ev = await moral_eval.async_evaluate(
+                        interaction_type="end_of_life_report",
+                        tick=tick,
+                        agent_id=self.agent_id,
+                        agent_name=self.name,
+                        agent_system_prompt=system_prompt,
+                        agent_user_prompt=user_prompt,
+                        agent_raw_response=response,
+                        extra_context={"death_cause": death_cause},
+                    )
+                    overall = ev.get("overall", {})
+                    parsed_ev = ev.get("parsed", {})
+                    rec = MoralEvalRecord(
+                        tick=tick,
+                        agent_id=self.agent_id,
+                        agent_name=self.name,
+                        interaction_type="end_of_life_report",
+                        self_overall=float(self_overall),
+                        external_overall=float(overall.get("overall", 0.0) or 0.0),
+                        external_overall_raw=float(overall.get("overall_raw", 0.0) or 0.0),
+                        polarity=float(overall.get("polarity", 0.0) or 0.0),
+                        good_avg=float(overall.get("good_avg", 0.0) or 0.0),
+                        bad_avg=float(overall.get("bad_avg", 0.0) or 0.0),
+                        dim_scores=dict((parsed_ev.get("scores") or {})),
+                        payload=ev,
+                    )
+                    debug_logger.log_moral_eval(rec)
+                except Exception:
+                    pass
 
             # Store in conversation history
             self.conversation_history.append({"role": "user", "content": f"[END OF LIFE] {user_prompt}"})
