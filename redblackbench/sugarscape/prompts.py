@@ -110,6 +110,8 @@ def build_sugarscape_observation_prompt(
     # Check if survival pressure is enabled (controls language around death/termination)
     enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
     social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+    trust_mode = str(getattr(env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+    show_global_rep = social_memory_visible and trust_mode in ("hybrid", "global_only")
 
     # === 1. RESOURCE STATE (Internal Status) ===
 
@@ -249,9 +251,9 @@ Sugar Level: {glucose_status}{spice_status}{age_status}
                 else:
                     urgency = "high-welfare"
 
-            # Get reputation for social decision-making (only if social memory visible)
+            # Get reputation for social decision-making (only if global reputation enabled)
             rep_str = ""
-            if social_memory_visible:
+            if show_global_rep:
                 reputation = env.get_agent_reputation(other_agent.agent_id, 0.5)
                 if reputation >= 0.7:
                     rep_desc = "trusted"
@@ -412,9 +414,13 @@ def build_sugarscape_trade_turn_prompt(
     # Get ablation settings from env config
     enable_survival_pressure = True
     social_memory_visible = True
+    trust_mode = "hybrid"
     if env is not None:
         enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
         social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+        trust_mode = str(getattr(env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+    show_global_rep = social_memory_visible and trust_mode in ("hybrid", "global_only")
+    show_personal_memory = social_memory_visible and trust_mode in ("hybrid", "personal_only")
 
     # Calculate survival times
     sugar_time = int(self_agent.wealth / self_agent.metabolism) if self_agent.metabolism > 0 else 999
@@ -481,9 +487,9 @@ def build_sugarscape_trade_turn_prompt(
     if env is not None:
         partner_location = f"\nPartner's location: {env.get_location_context(partner_agent.pos)} (at {partner_agent.pos})"
 
-    # --- Partner reputation (only if social memory visible) ---
+    # --- Partner reputation (only if global reputation enabled) ---
     partner_reputation_str = ""
-    if env is not None and social_memory_visible:
+    if env is not None and show_global_rep:
         partner_rep = env.get_agent_reputation(partner_agent.agent_id, 0.5)
         if partner_rep >= 0.7:
             reputation_desc = f"well-regarded ({partner_rep:.2f})"
@@ -493,8 +499,8 @@ def build_sugarscape_trade_turn_prompt(
             reputation_desc = f"questionable reputation ({partner_rep:.2f})"
         partner_reputation_str = f"\nPartner's reputation: {reputation_desc}"
 
-    # Partner history (only if social memory visible)
-    if social_memory_visible:
+    # Partner history (only if personal memory enabled)
+    if show_personal_memory:
         history = partner_memory_summary if partner_memory_summary else "First time meeting"
     else:
         history = "(No memory of past interactions)"
@@ -1443,9 +1449,13 @@ def build_small_talk_turn_prompt(
     # Get ablation settings
     enable_survival_pressure = True
     social_memory_visible = True
+    trust_mode = "hybrid"
     if env is not None:
         enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
         social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+        trust_mode = str(getattr(env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+    show_global_rep = social_memory_visible and trust_mode in ("hybrid", "global_only")
+    show_personal_memory = social_memory_visible and trust_mode in ("hybrid", "personal_only")
 
     # Get abstract status (not exact resources) - adjust language based on survival pressure
     if enable_survival_pressure:
@@ -1477,18 +1487,18 @@ def build_small_talk_turn_prompt(
         else:
             partner_status_desc = "has high welfare"
 
-    # Memory with this partner (only if social memory visible)
+    # Memory with this partner (only if personal memory enabled)
     memory_summary = ""
-    if social_memory_visible:
+    if show_personal_memory:
         trade_log = list(self_agent.get_partner_trade_log(partner_agent.agent_id, maxlen=50))
         if trade_log:
             memory_summary = f"\nYou have met {partner_agent.name} before ({len(trade_log)} past interactions)."
         else:
             memory_summary = f"\nThis is your first time meeting {partner_agent.name}."
 
-    # Partner reputation (only if social memory visible)
+    # Partner reputation (only if global reputation enabled)
     partner_rep_str = ""
-    if env is not None and social_memory_visible:
+    if env is not None and show_global_rep:
         partner_rep = env.get_agent_reputation(partner_agent.agent_id, 0.5)
         if partner_rep >= 0.7:
             partner_rep_str = f"\nOthers speak well of {partner_agent.name}."
@@ -1559,9 +1569,12 @@ def build_trade_intent_turn_prompt(
     # Get ablation settings
     enable_survival_pressure = True
     social_memory_visible = True
+    trust_mode = "hybrid"
     if env is not None:
         enable_survival_pressure = getattr(env.config, 'enable_survival_pressure', True)
         social_memory_visible = getattr(env.config, 'social_memory_visible', True)
+        trust_mode = str(getattr(env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+    show_personal_memory = social_memory_visible and trust_mode in ("hybrid", "personal_only")
 
     # Status description based on survival pressure setting
     if enable_survival_pressure:
@@ -1577,10 +1590,10 @@ def build_trade_intent_turn_prompt(
 
     partner_status = partner_agent.get_resource_status()
 
-    # Exclusion policy and trust (only if social memory visible)
+    # Exclusion policy and trust (only if personal memory enabled)
     exclusion_note = ""
     trust_info = ""
-    if social_memory_visible:
+    if show_personal_memory:
         # Check if exclusion policy applies
         should_exclude, exclude_reason = self_agent.should_exclude_partner(partner_agent.agent_id)
         if should_exclude:

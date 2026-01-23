@@ -176,7 +176,12 @@ class LLMSugarAgent(SugarAgent):
             elif event_type == "witnessed_death":
                 deceased = event.get("deceased_name", "someone")
                 cause = event.get("cause", "unknown")
-                lines.append(f"- Tick {tick}: You witnessed {deceased}'s death ({cause})")
+                last_words = event.get("last_words", "")
+                if last_words:
+                    lines.append(f"- Tick {tick}: You witnessed {deceased}'s death ({cause})")
+                    lines.append(f"  Their last words: \"{last_words}\"")
+                else:
+                    lines.append(f"- Tick {tick}: You witnessed {deceased}'s death ({cause})")
             else:
                 lines.append(f"- Tick {tick}: {event_type}")
 
@@ -578,57 +583,47 @@ class LLMSugarAgent(SugarAgent):
             "identity_after": self.self_identity_leaning,
         }
 
-        # Retry loop for robust parsing (same as identity_review)
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                current_messages = [{"role": "user", "content": user_prompt}]
-                
-                if attempt > 0:
-                    nudge = "\n\nERROR: Your previous response was formatted incorrectly. You MUST use the exact format:\nREFLECTION: ...\nIDENTITY_ASSESSMENT: ...\nJSON: {...}"
-                    current_messages = [{"role": "user", "content": user_prompt + nudge}]
+        # Get LLM response (single attempt - we always want to capture raw response for moral eval)
+        try:
+            response = await self.provider.generate(
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_tokens=512,
+            )
+            result["raw_response"] = response
 
-                response = await self.provider.generate(
-                    system_prompt=system_prompt,
-                    messages=current_messages,
-                    max_tokens=512,
-                )
+            # Strip thinking blocks before parsing (Qwen3 outputs <think> blocks)
+            cleaned = self._strip_thinking_blocks(response)
 
-                result["raw_response"] = response
+            # Parse the response (best effort - moral eval doesn't depend on this)
+            parsed = parse_identity_review_response(cleaned)
+            result["parsed"] = parsed
 
-                # Parse the response (same parser as identity review)
-                parsed = parse_identity_review_response(response)
-                result["parsed"] = parsed
+            # Check if parsing was successful
+            valid = bool(parsed.get("reflection")) and bool(parsed.get("identity_assessment"))
+            if valid:
+                events = self.clear_pending_events()
+                result["events"] = events
+            else:
+                # Parsing failed but we still have raw response for moral eval
+                result["parsing_failed"] = True
 
-                # Validation: did we get the core sections?
-                valid = bool(parsed.get("reflection")) and bool(parsed.get("identity_assessment"))
+        except Exception as e:
+            print(f"Event-triggered identity review error for {self.name}: {e}")
+            result["error"] = str(e)
+            # Continue to moral eval with whatever we have
 
-                if valid:
-                    # Now that we have a valid response, clear pending events
-                    events = self.clear_pending_events()
-                    result["events"] = events
-                    break
-
-                if attempt < max_retries:
-                    print(f"Event-triggered identity review parsing failed for {self.name}, retrying ({attempt+1}/{max_retries})...")
-
-            except Exception as e:
-                print(f"Event-triggered identity review error for {self.name} (attempt {attempt+1}): {e}")
-                if attempt == max_retries:
-                    result["error"] = str(e)
-                    return result
-
-        # Apply updates if present
+        # Apply updates if parsing succeeded
         parsed = result.get("parsed")
         if parsed and parsed.get("updates"):
             changes = self.apply_reflection_update(parsed["updates"])
             result["updates_applied"] = changes
             result["identity_after"] = self.self_identity_leaning
 
-        # External moral evaluation (event-triggered identity review)
+        # External moral evaluation - ALWAYS RUN with raw response (doesn't need parsing)
         moral_eval = getattr(env, "moral_evaluator", None)
         debug_logger = getattr(env, "debug_logger", None)
-        if moral_eval and debug_logger:
+        if moral_eval and debug_logger and result.get("raw_response"):
             try:
                 from redblackbench.sugarscape.moral_evaluator import compute_self_overall_from_leaning
                 from redblackbench.sugarscape.debug_logger import MoralEvalRecord
@@ -638,12 +633,13 @@ class LLMSugarAgent(SugarAgent):
                     tick=tick,
                     agent_id=self.agent_id,
                     agent_name=self.name,
-                    agent_system_prompt=result.get("system_prompt", ""),
-                    agent_user_prompt=result.get("user_prompt", ""),
+                    agent_system_prompt=system_prompt,
+                    agent_user_prompt=user_prompt,
                     agent_raw_response=result.get("raw_response", ""),
                     extra_context={
                         "events": result.get("events", events_snapshot),
-                        "events_summary": result.get("events_summary", ""),
+                        "events_summary": events_summary,
+                        "parsing_failed": result.get("parsing_failed", False),
                     },
                 )
                 overall = ev.get("overall", {})
@@ -663,8 +659,8 @@ class LLMSugarAgent(SugarAgent):
                     payload=ev,
                 )
                 debug_logger.log_moral_eval(rec)
-            except Exception:
-                pass
+            except Exception as eval_err:
+                print(f"Moral eval error for {self.name}: {eval_err}")
 
         # Store in identity_review_history (unified with periodic reviews)
         self.identity_review_history.append({

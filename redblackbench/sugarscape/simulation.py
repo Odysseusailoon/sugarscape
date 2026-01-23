@@ -50,9 +50,14 @@ class SugarSimulation:
         self.env = SugarEnvironment(self.config, debug_logger=self.debug_logger)
 
         self.trade_system = None
-        if self.config.enable_trade:
-            mode = (self.config.trade_mode or "mrs").strip().lower()
-            if mode == "dialogue":
+        enable_encounters = bool(getattr(self.config, "enable_encounter_dialogue", False))
+        if self.config.enable_trade or enable_encounters:
+            mode = (getattr(self.config, "trade_mode", "mrs") or "mrs").strip().lower()
+            # DialogueTradeSystem covers:
+            # - "dialogue": full smalltalk/intent/negotiation encounter protocol
+            # - "protocol": no-natural-language trading (offer/reject/etc only)
+            # - encounter-only runs when enable_trade=False but enable_encounter_dialogue=True
+            if (mode in {"dialogue", "protocol"}) or enable_encounters:
                 self.trade_system = DialogueTradeSystem(
                     self.env,
                     max_rounds=self.config.trade_dialogue_rounds,
@@ -485,7 +490,8 @@ class SugarSimulation:
         # self.rng.shuffle(self.agents) # Done at start
 
         # Phase 2. Trade (optional) happens after movement/harvest and before metabolism
-        if self.config.enable_trade and self.trade_system:
+        enable_encounters = bool(getattr(self.config, "enable_encounter_dialogue", False))
+        if (self.config.enable_trade or enable_encounters) and self.trade_system:
             # Only alive agents trade
             live_agents = [a for a in self.agents if a.alive]
             self.trade_system.execute_trade_round(live_agents, tick=self.tick)
@@ -547,6 +553,21 @@ class SugarSimulation:
 
                 # Notify nearby LLM agents of witnessed death (event-triggered reflection)
                 try:
+                    # Extract last words (advice) from dying agent's end-of-life report if available
+                    last_words = None
+                    if isinstance(agent, LLMSugarAgent) and hasattr(agent, 'end_of_life_report'):
+                        report = getattr(agent, 'end_of_life_report', None)
+                        if report and isinstance(report, dict):
+                            parsed = report.get("parsed", {})
+                            if parsed:
+                                # Get advice as last words, fall back to final reflection excerpt
+                                last_words = parsed.get("advice", "")
+                                if not last_words:
+                                    # Use first 200 chars of final reflection as last words
+                                    reflection = parsed.get("final_reflection", "")
+                                    if reflection:
+                                        last_words = reflection[:200] + ("..." if len(reflection) > 200 else "")
+                    
                     for nearby_agent in self.agents:
                         if nearby_agent == agent or not nearby_agent.alive:
                             continue
@@ -555,12 +576,16 @@ class SugarSimulation:
                         # Check if within vision range
                         dist = abs(nearby_agent.pos[0] - agent.pos[0]) + abs(nearby_agent.pos[1] - agent.pos[1])
                         if dist <= nearby_agent.vision:
-                            nearby_agent.record_reflection_event("witnessed_death", self.tick, {
+                            event_details = {
                                 "deceased_name": agent.name,
                                 "deceased_id": agent.agent_id,
                                 "cause": death_cause,
                                 "distance": dist,
-                            })
+                            }
+                            # Include last words if available
+                            if last_words:
+                                event_details["last_words"] = last_words
+                            nearby_agent.record_reflection_event("witnessed_death", self.tick, event_details)
                 except Exception as e:
                     pass  # Non-critical feature, don't break simulation
 
@@ -1165,9 +1190,10 @@ class SugarSimulation:
 
         # Trade system
         sim.trade_system = None
-        if config.enable_trade:
-            mode = (config.trade_mode or "mrs").strip().lower()
-            if mode == "dialogue":
+        enable_encounters = bool(getattr(config, "enable_encounter_dialogue", False))
+        if config.enable_trade or enable_encounters:
+            mode = (getattr(config, "trade_mode", "mrs") or "mrs").strip().lower()
+            if (mode in {"dialogue", "protocol"}) or enable_encounters:
                 sim.trade_system = DialogueTradeSystem(
                     sim.env,
                     max_rounds=config.trade_dialogue_rounds,

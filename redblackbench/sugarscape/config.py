@@ -413,6 +413,17 @@ SUCCESS = Everyone survives. Measured by group welfare, especially the worst-off
     #   - Policy-based exclusion disabled in trade intent prompts
     social_memory_visible: bool = True
 
+    # Trust Mechanism Ablation (only applies when social_memory_visible=True)
+    # Controls WHAT trust signals agents can use:
+    # - "hybrid"      : global public reputation + personal partner trust/history (default)
+    # - "personal_only": NO global reputation mechanism (agents rely only on personal memory/trust)
+    # - "global_only" : NO personal memory/trust influence (agents rely only on public reputation)
+    #
+    # Notes:
+    # - social_memory_visible=False overrides this and hides ALL trust signals.
+    # - "global_only" also disables policy-based exclusion (which depends on personal trust).
+    trust_mechanism_mode: str = "hybrid"
+
     # Simulation
     max_ticks: int = 1000
     seed: int = 42

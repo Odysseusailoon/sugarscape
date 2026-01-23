@@ -25,6 +25,9 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        identity_distribution: dict = None,
                        enable_survival_pressure: bool = True,
                        social_memory_visible: bool = True,
+                       trust_mechanism_mode: str = "hybrid",
+                       enable_abstraction_prompt: bool = False,
+                       encounter_protocol_mode: str = "full",
                        experiment_name_suffix: str = "",
                        # LLM Evaluation options
                        enable_llm_evaluation: bool = True,
@@ -76,6 +79,9 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         # Ablation flags
         enable_survival_pressure=enable_survival_pressure,
         social_memory_visible=social_memory_visible,
+        trust_mechanism_mode=trust_mechanism_mode,
+        enable_abstraction_prompt=enable_abstraction_prompt,
+        encounter_protocol_mode=encounter_protocol_mode,
         # LLM Evaluation settings
         enable_llm_evaluation=enable_llm_evaluation,
         llm_evaluator_model=llm_evaluator_model,
@@ -87,6 +93,12 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         print("⚠️ ABLATION: Survival pressure DISABLED (agents won't die from starvation)")
     if not social_memory_visible:
         print("⚠️ ABLATION: Social memory DISABLED (no trade history, reputation hidden)")
+    elif trust_mechanism_mode != "hybrid":
+        print(f"⚠️ ABLATION: Trust mechanism mode = {trust_mechanism_mode}")
+    if enable_abstraction_prompt:
+        print("⚠️ ABLATION: Abstraction prompt ENABLED (encouraging abstract principles)")
+    if encounter_protocol_mode != "full":
+        print(f"⚠️ ABLATION: Encounter protocol mode = {encounter_protocol_mode}")
     
     # Print evaluation status
     if enable_llm_evaluation:
@@ -309,6 +321,16 @@ def parse_args():
                         help="ABLATION: Disable survival pressure (agents don't die from starvation)")
     parser.add_argument("--no-social-memory", action="store_true",
                         help="ABLATION: Disable social memory (no trade history, reputation hidden)")
+    parser.add_argument("--no-global-reputation", action="store_true",
+                        help="ABLATION: Disable GLOBAL reputation (keep personal memory/trust only)")
+    parser.add_argument("--trust-mechanism-mode", type=str, default="hybrid",
+                        choices=["hybrid", "personal_only", "global_only"],
+                        help="ABLATION: Trust mechanism mode (hybrid=public+personal, personal_only=no public rep, global_only=no personal memory)")
+    parser.add_argument("--enable-abstraction-prompt", action="store_true",
+                        help="ABLATION: Add explicit prompt encouraging abstract principle formation")
+    parser.add_argument("--encounter-protocol-mode", type=str, default="full",
+                        choices=["full", "chat_only", "protocol_only"],
+                        help="ABLATION: Encounter protocol mode (full=normal, chat_only=no trade, protocol_only=no speech)")
     parser.add_argument("--experiment-suffix", type=str, default="",
                         help="Suffix to add to experiment name (for ablation labeling)")
     
@@ -400,12 +422,18 @@ def main():
 
     if args.single:
         # Run single experiment
+        trust_mode = args.trust_mechanism_mode
+        if args.no_global_reputation:
+            trust_mode = "personal_only"
         run_goal_experiment(args.single, args.ticks, args.seed, model,
                           args.population, args.width, args.height, args.difficulty,
                           args.trade_rounds, args.provider, args.lora,
                           args.use_mixed_identity, identity_distribution,
                           enable_survival_pressure=not args.no_survival_pressure,
                           social_memory_visible=not args.no_social_memory,
+                          trust_mechanism_mode=trust_mode,
+                          enable_abstraction_prompt=args.enable_abstraction_prompt,
+                          encounter_protocol_mode=args.encounter_protocol_mode,
                           experiment_name_suffix=args.experiment_suffix,
                           enable_llm_evaluation=not args.no_llm_evaluation,
                           llm_evaluator_model=args.evaluator_model,

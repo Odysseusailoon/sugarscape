@@ -237,6 +237,23 @@ class DialogueTradeSystem:
         self.negotiation_rounds = int(getattr(env.config, "negotiation_rounds", 2))
         self.enable_social_exclusion = bool(getattr(env.config, "enable_social_exclusion", True))
 
+        # Encounter protocol mode (ablations)
+        # - full: small talk → intent → negotiation → execution
+        # - chat_only: small talk only; no trade/transfer
+        # - protocol_only: no natural language; JSON-only OFFER/ACCEPT/REJECT/WALK_AWAY
+        mode = (getattr(env.config, "encounter_protocol_mode", "full") or "full").strip().lower()
+        # Back-compat: if user sets trade_mode="protocol", treat as protocol_only
+        trade_mode = (getattr(env.config, "trade_mode", "") or "").strip().lower()
+        if trade_mode == "protocol" and mode == "full":
+            mode = "protocol_only"
+        # If trade is disabled but encounter dialogue is enabled, force chat_only
+        if (not bool(getattr(env.config, "enable_trade", False))) and bool(getattr(env.config, "enable_encounter_dialogue", False)):
+            mode = "chat_only"
+        self.encounter_protocol_mode = mode
+        # Ablation modes require the new protocol runner
+        if self.encounter_protocol_mode in {"chat_only", "protocol_only"}:
+            self.enable_new_protocol = True
+
     def execute_trade_round(self, agents: List[SugarAgent], tick: Optional[int] = None):
         """Execute trade round with batch parallel processing (Optimization #1).
 
@@ -348,12 +365,19 @@ class DialogueTradeSystem:
         full_conversation: List[Dict[str, str]] = []
 
         print(f"[ENCOUNTER] Starting: {a.name} <-> {b.name} (tick {tick})")
+        protocol_mode = (self.encounter_protocol_mode or "full").strip().lower()
+        protocol_only = protocol_mode == "protocol_only"
+        chat_only = protocol_mode == "chat_only"
+        run_small_talk = not protocol_only
+        run_trade_intent = (not protocol_only) and (not chat_only)
 
         # === PHASE 0: SOCIAL EXCLUSION CHECK ===
         # Only check exclusion if both social_exclusion is enabled AND social memory is visible
         # (Without social memory, agents can't remember who to exclude)
         social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
-        if self.enable_social_exclusion and social_memory_visible:
+        trust_mode = str(getattr(self.env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+        personal_enabled = social_memory_visible and trust_mode in ("hybrid", "personal_only")
+        if self.enable_social_exclusion and personal_enabled:
             a_excludes, a_reason = a.should_exclude_partner(b.agent_id)
             b_excludes, b_reason = b.should_exclude_partner(a.agent_id)
 
@@ -382,63 +406,82 @@ class DialogueTradeSystem:
                 )
                 return
 
-        # === PHASE 1: SMALL TALK (2 rounds, no JSON) ===
+        # === PHASE 1: SMALL TALK (N rounds, no JSON) ===
         small_talk_transcript: List[str] = []
 
-        for round_idx in range(1, self.small_talk_rounds + 1):
-            for speaker, listener in [(a, b), (b, a)]:
-                # Build prompts
-                system_prompt = build_small_talk_system_prompt(
-                    agent_name=speaker.name,
-                    agent=speaker,
-                )
-
-                conversation_text = "\n".join(small_talk_transcript[-6:]) if small_talk_transcript else ""
-                last_message = small_talk_transcript[-1] if small_talk_transcript else ""
-
-                turn_prompt = build_small_talk_turn_prompt(
-                    self_agent=speaker,
-                    partner_agent=listener,
-                    round_idx=round_idx,
-                    conversation_so_far=conversation_text,
-                    partner_last_message=last_message,
-                    env=self.env,
-                )
-
-                # Generate response - simple single-stage, strip thinking blocks after
-                try:
-                    response = await speaker.provider.generate(
-                        system_prompt=system_prompt,
-                        messages=[{"role": "user", "content": turn_prompt}],
-                        max_tokens=self.dialogue_response_tokens,
+        if run_small_talk and self.small_talk_rounds > 0:
+            for round_idx in range(1, self.small_talk_rounds + 1):
+                for speaker, listener in [(a, b), (b, a)]:
+                    # Build prompts
+                    system_prompt = build_small_talk_system_prompt(
+                        agent_name=speaker.name,
+                        agent=speaker,
                     )
-                    # Strip any thinking blocks the model outputs, keep content if all was in thinking
-                    cleaned_response = self._strip_thinking_blocks(response, keep_if_empty=True).strip()
-                    cleaned_response = self._strip_reasoning_prefix(cleaned_response)
 
-                    # Add to transcript
-                    small_talk_transcript.append(f"{speaker.name}: {cleaned_response[:500]}")
+                    conversation_text = "\n".join(small_talk_transcript[-6:]) if small_talk_transcript else ""
+                    last_message = small_talk_transcript[-1] if small_talk_transcript else ""
 
-                    # Log the turn
-                    full_conversation.append({
-                        "type": "small_talk",
-                        "tick": tick,
-                        "round": round_idx,
-                        "speaker": speaker.name,
-                        "partner": listener.name,
-                        "message": cleaned_response[:500],
-                    })
+                    turn_prompt = build_small_talk_turn_prompt(
+                        self_agent=speaker,
+                        partner_agent=listener,
+                        round_idx=round_idx,
+                        conversation_so_far=conversation_text,
+                        partner_last_message=last_message,
+                        env=self.env,
+                    )
 
-                    # Store in agent's conversation history (store cleaned dialogue, not raw thinking)
-                    if hasattr(speaker, 'conversation_history'):
-                        speaker.conversation_history.append({"role": "user", "content": f"[SMALL TALK with {listener.name}] {turn_prompt}"})
-                        speaker.conversation_history.append({"role": "assistant", "content": cleaned_response})
+                    # Generate response - simple single-stage, strip thinking blocks after
+                    try:
+                        response = await speaker.provider.generate(
+                            system_prompt=system_prompt,
+                            messages=[{"role": "user", "content": turn_prompt}],
+                            max_tokens=self.dialogue_response_tokens,
+                        )
+                        # Strip any thinking blocks the model outputs, keep content if all was in thinking
+                        cleaned_response = self._strip_thinking_blocks(response, keep_if_empty=True).strip()
+                        cleaned_response = self._strip_reasoning_prefix(cleaned_response)
 
-                except Exception as e:
-                    print(f"[SMALL TALK] Error for {speaker.name}: {e}")
-                    small_talk_transcript.append(f"{speaker.name}: (silence)")
+                        # Add to transcript
+                        small_talk_transcript.append(f"{speaker.name}: {cleaned_response[:500]}")
 
-        print(f"[ENCOUNTER] Small talk completed: {a.name} <-> {b.name}")
+                        # Log the turn
+                        full_conversation.append({
+                            "type": "small_talk",
+                            "tick": tick,
+                            "round": round_idx,
+                            "speaker": speaker.name,
+                            "partner": listener.name,
+                            "message": cleaned_response[:500],
+                        })
+
+                        # Store in agent's conversation history (store cleaned dialogue, not raw thinking)
+                        if hasattr(speaker, 'conversation_history'):
+                            speaker.conversation_history.append({"role": "user", "content": f"[SMALL TALK with {listener.name}] {turn_prompt}"})
+                            speaker.conversation_history.append({"role": "assistant", "content": cleaned_response})
+
+                    except Exception as e:
+                        print(f"[SMALL TALK] Error for {speaker.name}: {e}")
+                        small_talk_transcript.append(f"{speaker.name}: (silence)")
+
+            print(f"[ENCOUNTER] Small talk completed: {a.name} <-> {b.name}")
+
+        # Ablation: chat_only ends here (still runs reflection)
+        if chat_only:
+            print(f"[ENCOUNTER] Chat-only completed (no trade): {a.name} <-> {b.name}")
+            self._record_no_trade(
+                a, b, tick,
+                outcome="CHAT_ONLY",
+                pending_offer=None,
+                conversation=full_conversation,
+            )
+            await self._run_reflection_for_pair(
+                agent_a=a,
+                agent_b=b,
+                tick=tick,
+                outcome="chat_only",
+                conversation=full_conversation,
+            )
+            return
 
         # === PHASE 2: TRADE INTENT DECISION ===
         conversation_summary = "\n".join(small_talk_transcript[-4:]) if small_talk_transcript else "(No conversation)"
@@ -446,53 +489,58 @@ class DialogueTradeSystem:
         a_wants_trade = False
         b_wants_trade = False
 
-        for speaker, listener in [(a, b), (b, a)]:
-            system_prompt = build_trade_intent_system_prompt(
-                agent_name=speaker.name,
-                agent=speaker,
-            )
-
-            turn_prompt = build_trade_intent_turn_prompt(
-                self_agent=speaker,
-                partner_agent=listener,
-                conversation_summary=conversation_summary,
-                env=self.env,
-            )
-
-            try:
-                # Simple single-stage - strip thinking blocks after
-                response = await speaker.provider.generate(
-                    system_prompt=system_prompt,
-                    messages=[{"role": "user", "content": turn_prompt}],
-                    max_tokens=self.dialogue_response_tokens,
+        if run_trade_intent:
+            for speaker, listener in [(a, b), (b, a)]:
+                system_prompt = build_trade_intent_system_prompt(
+                    agent_name=speaker.name,
+                    agent=speaker,
                 )
-                cleaned_response = self._strip_thinking_blocks(response, keep_if_empty=True).strip()
 
-                # Parse intent
-                intent = self._parse_trade_intent(cleaned_response)
+                turn_prompt = build_trade_intent_turn_prompt(
+                    self_agent=speaker,
+                    partner_agent=listener,
+                    conversation_summary=conversation_summary,
+                    env=self.env,
+                )
 
-                if speaker == a:
-                    a_wants_trade = (intent == "TRADE")
-                else:
-                    b_wants_trade = (intent == "TRADE")
+                try:
+                    # Simple single-stage - strip thinking blocks after
+                    response = await speaker.provider.generate(
+                        system_prompt=system_prompt,
+                        messages=[{"role": "user", "content": turn_prompt}],
+                        max_tokens=self.dialogue_response_tokens,
+                    )
+                    cleaned_response = self._strip_thinking_blocks(response, keep_if_empty=True).strip()
 
-                # Extract message
-                message = self._extract_message_from_intent(cleaned_response)
+                    # Parse intent
+                    intent = self._parse_trade_intent(cleaned_response)
 
-                full_conversation.append({
-                    "type": "trade_intent",
-                    "tick": tick,
-                    "speaker": speaker.name,
-                    "intent": intent,
-                    "message": message,
-                })
+                    if speaker == a:
+                        a_wants_trade = (intent == "TRADE")
+                    else:
+                        b_wants_trade = (intent == "TRADE")
 
-                if hasattr(speaker, 'conversation_history'):
-                    speaker.conversation_history.append({"role": "user", "content": f"[TRADE INTENT with {listener.name}] {turn_prompt}"})
-                    speaker.conversation_history.append({"role": "assistant", "content": cleaned_response})
+                    # Extract message
+                    message = self._extract_message_from_intent(cleaned_response)
 
-            except Exception as e:
-                print(f"[TRADE INTENT] Error for {speaker.name}: {e}")
+                    full_conversation.append({
+                        "type": "trade_intent",
+                        "tick": tick,
+                        "speaker": speaker.name,
+                        "intent": intent,
+                        "message": message,
+                    })
+
+                    if hasattr(speaker, 'conversation_history'):
+                        speaker.conversation_history.append({"role": "user", "content": f"[TRADE INTENT with {listener.name}] {turn_prompt}"})
+                        speaker.conversation_history.append({"role": "assistant", "content": cleaned_response})
+
+                except Exception as e:
+                    print(f"[TRADE INTENT] Error for {speaker.name}: {e}")
+        else:
+            # protocol_only ablation: skip intent; proceed directly to negotiation
+            a_wants_trade = True
+            b_wants_trade = True
 
         # If EITHER party wants to trade, proceed to negotiation
         if not (a_wants_trade or b_wants_trade):
@@ -517,7 +565,7 @@ class DialogueTradeSystem:
         print(f"[ENCOUNTER] Trade intent confirmed: {a.name}={'TRADE' if a_wants_trade else 'DECLINE'}, {b.name}={'TRADE' if b_wants_trade else 'DECLINE'}")
 
         # === PHASE 3: NEGOTIATION (2 rounds with JSON) ===
-        await self._run_negotiation_phase(a, b, tick, full_conversation)
+        await self._run_negotiation_phase(a, b, tick, full_conversation, protocol_only=protocol_only)
 
     async def _run_negotiation_phase(
         self,
@@ -525,6 +573,7 @@ class DialogueTradeSystem:
         b: SugarAgent,
         tick: int,
         full_conversation: List[Dict[str, str]],
+        protocol_only: bool = False,
     ) -> None:
         """Run the negotiation phase with JSON offers."""
         transcript: List[str] = []
@@ -549,6 +598,7 @@ class DialogueTradeSystem:
                 agent_name=speaker.name,
                 agent=speaker,
                 enable_survival_pressure=enable_survival_pressure,
+                protocol_only=protocol_only,
             )
 
             recent_transcript = "\n".join(transcript[-6:]) if transcript else "(Starting negotiation)"
@@ -580,12 +630,14 @@ class DialogueTradeSystem:
                 include_history = getattr(self.env.config, 'trade_history_in_prompt', True)
                 history_limit = getattr(self.env.config, 'trade_history_prompt_limit', 10)
                 social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
+                trust_mode = str(getattr(self.env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+                personal_enabled = social_memory_visible and trust_mode in ("hybrid", "personal_only")
                 beliefs_appendix = format_beliefs_policies_appendix(
                     speaker,
                     partner_id=listener.agent_id,
                     include_trade_history=include_history,
                     trade_history_limit=history_limit,
-                    social_memory_visible=social_memory_visible,
+                    social_memory_visible=personal_enabled,
                 )
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
@@ -621,7 +673,15 @@ class DialogueTradeSystem:
                     pending_offer_from=pending_offer_from,
                 )
 
-            transcript.append(f"{speaker.name}: {parsed.say}")
+            say_for_world = "" if protocol_only else parsed.say
+            if protocol_only:
+                # Keep an in-world transcript without natural language (for reflection context/debugging).
+                offer_blob = ""
+                if parsed.intent in ("OFFER", "REJECT"):
+                    offer_blob = f" public_offer={parsed.public_offer}"
+                transcript.append(f"{speaker.name}: {parsed.intent}{offer_blob}")
+            else:
+                transcript.append(f"{speaker.name}: {say_for_world}")
 
             # Log the turn (include prompt for debugging)
             trade_turn = {
@@ -649,8 +709,8 @@ class DialogueTradeSystem:
                 pending_offer_public_text = self._format_public_offer_text(speaker, pending_offer)
                 continue
 
-            if parsed.intent in {"REJECT", "WALK_AWAY"}:
-                print(f"[NEGOTIATION] {speaker.name} {parsed.intent}ed: {a.name} <-> {b.name}")
+            if parsed.intent == "WALK_AWAY":
+                print(f"[NEGOTIATION] {speaker.name} walked away: {a.name} <-> {b.name}")
                 self._record_no_trade(
                     a, b, tick,
                     outcome=parsed.intent,
@@ -668,6 +728,45 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                 )
                 return
+
+            if parsed.intent == "REJECT":
+                # Check if REJECT includes a counter-offer (non-zero give or receive)
+                counter = parsed.public_offer or {}
+                counter_give = counter.get("give", {})
+                counter_recv = counter.get("receive", {})
+                has_counter = (
+                    counter_give.get("sugar", 0) > 0 or counter_give.get("spice", 0) > 0 or
+                    counter_recv.get("sugar", 0) > 0 or counter_recv.get("spice", 0) > 0
+                )
+                
+                if has_counter:
+                    # Treat REJECT + counter-offer as a new OFFER, continue negotiation
+                    print(f"[NEGOTIATION] {speaker.name} counter-offered: {a.name} <-> {b.name}")
+                    pending_offer = parsed.public_offer
+                    pending_offer_from = speaker.agent_id
+                    pending_offer_private_execute = parsed.private_execute_give
+                    pending_offer_public_text = self._format_public_offer_text(speaker, pending_offer)
+                    continue
+                else:
+                    # Pure REJECT without counter-offer ends negotiation
+                    print(f"[NEGOTIATION] {speaker.name} rejected: {a.name} <-> {b.name}")
+                    self._record_no_trade(
+                        a, b, tick,
+                        outcome=parsed.intent,
+                        pending_offer=pending_offer,
+                        conversation=full_conversation,
+                        decider_id=speaker.agent_id,
+                        decider_name=speaker.name,
+                    )
+
+                    await self._run_reflection_for_pair(
+                        agent_a=a,
+                        agent_b=b,
+                        tick=tick,
+                        outcome=parsed.intent.lower(),
+                        conversation=full_conversation,
+                    )
+                    return
 
             if parsed.intent == "ACCEPT":
                 if pending_offer is None or pending_offer_from != listener.agent_id:
@@ -865,12 +964,14 @@ class DialogueTradeSystem:
                 include_history = getattr(self.env.config, 'trade_history_in_prompt', True)
                 history_limit = getattr(self.env.config, 'trade_history_prompt_limit', 10)
                 social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
+                trust_mode = str(getattr(self.env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+                personal_enabled = social_memory_visible and trust_mode in ("hybrid", "personal_only")
                 beliefs_appendix = format_beliefs_policies_appendix(
                     speaker,
                     partner_id=listener.agent_id,
                     include_trade_history=include_history,
                     trade_history_limit=history_limit,
-                    social_memory_visible=social_memory_visible,
+                    social_memory_visible=personal_enabled,
                 )
                 if beliefs_appendix:
                     turn_prompt += beliefs_appendix
@@ -947,8 +1048,8 @@ class DialogueTradeSystem:
                 pending_offer_public_text = self._format_public_offer_text(speaker, pending_offer)
                 continue
 
-            if parsed.intent in {"REJECT", "WALK_AWAY"}:
-                print(f"[TRADE] {speaker.name} {parsed.intent}ed negotiation with {listener.name}")
+            if parsed.intent == "WALK_AWAY":
+                print(f"[TRADE] {speaker.name} walked away from {listener.name}")
                 self._record_no_trade(
                     a, b, tick,
                     outcome=parsed.intent,
@@ -958,7 +1059,7 @@ class DialogueTradeSystem:
                     decider_name=speaker.name,
                 )
 
-                # Post-encounter reflection for rejections/walkways
+                # Post-encounter reflection for walkways
                 await self._run_reflection_for_pair(
                     agent_a=a,
                     agent_b=b,
@@ -967,6 +1068,46 @@ class DialogueTradeSystem:
                     conversation=full_conversation,
                 )
                 return
+
+            if parsed.intent == "REJECT":
+                # Check if REJECT includes a counter-offer (non-zero give or receive)
+                counter = parsed.public_offer or {}
+                counter_give = counter.get("give", {})
+                counter_recv = counter.get("receive", {})
+                has_counter = (
+                    counter_give.get("sugar", 0) > 0 or counter_give.get("spice", 0) > 0 or
+                    counter_recv.get("sugar", 0) > 0 or counter_recv.get("spice", 0) > 0
+                )
+                
+                if has_counter:
+                    # Treat REJECT + counter-offer as a new OFFER, continue negotiation
+                    print(f"[TRADE] {speaker.name} counter-offered to {listener.name}")
+                    pending_offer = parsed.public_offer
+                    pending_offer_from = speaker.agent_id
+                    pending_offer_private_execute = parsed.private_execute_give
+                    pending_offer_public_text = self._format_public_offer_text(speaker, pending_offer)
+                    continue
+                else:
+                    # Pure REJECT without counter-offer ends negotiation
+                    print(f"[TRADE] {speaker.name} rejected {listener.name}")
+                    self._record_no_trade(
+                        a, b, tick,
+                        outcome=parsed.intent,
+                        pending_offer=pending_offer,
+                        conversation=full_conversation,
+                        decider_id=speaker.agent_id,
+                        decider_name=speaker.name,
+                    )
+
+                    # Post-encounter reflection for rejections
+                    await self._run_reflection_for_pair(
+                        agent_a=a,
+                        agent_b=b,
+                        tick=tick,
+                        outcome=parsed.intent.lower(),
+                        conversation=full_conversation,
+                    )
+                    return
 
             if parsed.intent == "ACCEPT":
                 if pending_offer is None or pending_offer_from != listener.agent_id:
@@ -1542,6 +1683,10 @@ class DialogueTradeSystem:
         offerer.get_partner_trade_log(acceptor.agent_id, maxlen=self.memory_maxlen).append(offerer_event)
         acceptor.get_partner_trade_log(offerer.agent_id, maxlen=self.memory_maxlen).append(acceptor_event)
 
+        # Capture trust BEFORE update (for logging)
+        trust_offerer_to_acceptor_before = offerer.get_partner_trust(acceptor.agent_id)
+        trust_acceptor_to_offerer_before = acceptor.get_partner_trust(offerer.agent_id)
+
         self._update_trust_from_contract(
             self_agent=offerer,
             partner=acceptor,
@@ -1636,6 +1781,10 @@ class DialogueTradeSystem:
         # Get reputation after updates
         rep_offerer_after = self.env.get_agent_reputation(offerer.agent_id, 0.5)
         rep_acceptor_after = self.env.get_agent_reputation(acceptor.agent_id, 0.5)
+        
+        # Get trust after updates (personal memory) - trust was updated in _update_trust_from_contract
+        trust_offerer_to_acceptor_after = offerer.get_partner_trust(acceptor.agent_id)
+        trust_acceptor_to_offerer_after = acceptor.get_partner_trust(offerer.agent_id)
 
         # Log to debug logger
         if self.env.debug_logger:
@@ -1722,6 +1871,11 @@ class DialogueTradeSystem:
                 reputation_a_after=rep_offerer_after,
                 reputation_b_before=rep_acceptor_before,
                 reputation_b_after=rep_acceptor_after,
+                # Trust (personal memory)
+                trust_a_to_b_before=trust_offerer_to_acceptor_before,
+                trust_a_to_b_after=trust_offerer_to_acceptor_after,
+                trust_b_to_a_before=trust_acceptor_to_offerer_before,
+                trust_b_to_a_after=trust_acceptor_to_offerer_after,
                 # Goal and gift tracking
                 agent_a_goal=offerer_goal[:50],  # Truncate for CSV
                 agent_b_goal=acceptor_goal[:50],
@@ -1835,6 +1989,14 @@ class DialogueTradeSystem:
             b_is_altruist = any(kw in goal_b.lower() for kw in altruist_keywords)
             gift_hint_a = a_is_altruist and urgency_b == "CRITICAL"
             gift_hint_b = b_is_altruist and urgency_a == "CRITICAL"
+            
+            # Get reputation (global)
+            rep_a = self.env.get_agent_reputation(a.agent_id, 0.5)
+            rep_b = self.env.get_agent_reputation(b.agent_id, 0.5)
+            
+            # Get trust (personal memory) - no change for no-trade
+            trust_a_to_b = a.get_partner_trust(b.agent_id)
+            trust_b_to_a = b.get_partner_trust(a.agent_id)
 
             trade_record = TradeRecord(
                 tick=tick,
@@ -1862,6 +2024,16 @@ class DialogueTradeSystem:
                 agent_b_location=location_b,
                 agent_a_pos=a.pos,
                 agent_b_pos=b.pos,
+                # Reputation (global)
+                reputation_a_before=rep_a,
+                reputation_a_after=rep_a,  # No change for no-trade
+                reputation_b_before=rep_b,
+                reputation_b_after=rep_b,
+                # Trust (personal memory)
+                trust_a_to_b_before=trust_a_to_b,
+                trust_a_to_b_after=trust_a_to_b,  # No change for no-trade
+                trust_b_to_a_before=trust_b_to_a,
+                trust_b_to_a_after=trust_b_to_a,
                 # Goal and gift tracking
                 agent_a_goal=goal_a[:50],
                 agent_b_goal=goal_b[:50],
@@ -1912,6 +2084,11 @@ class DialogueTradeSystem:
         trade_completed: bool,
     ) -> None:
         """Update global reputation based on trade behavior."""
+        trust_mode = str(getattr(self.env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+        social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
+        global_enabled = social_memory_visible and trust_mode in ("hybrid", "global_only")
+        if not global_enabled:
+            return
         delta = 0.0
 
         # 1. Honesty component
@@ -1946,9 +2123,11 @@ class DialogueTradeSystem:
             return "stable"
 
     def _format_partner_memory(self, self_agent: SugarAgent, partner: SugarAgent) -> str:
-        # Check if social memory is visible
+        # Check if personal memory is enabled
         social_memory_visible = getattr(self.env.config, 'social_memory_visible', True)
-        if not social_memory_visible:
+        trust_mode = str(getattr(self.env.config, "trust_mechanism_mode", "hybrid")).strip().lower()
+        personal_enabled = social_memory_visible and trust_mode in ("hybrid", "personal_only")
+        if not personal_enabled:
             return "(No memory of past interactions)"
 
         trust = self_agent.get_partner_trust(partner.agent_id)
@@ -2450,7 +2629,7 @@ class DialogueTradeSystem:
                         )
                         debug_logger.log_moral_eval(rec)
                     except Exception:
-                        pass
+                        pass  # Non-critical, don't break reflection
 
         except Exception as e:
             print(f"[REFLECTION] Error for {self_agent.name}: {e}")
@@ -2480,6 +2659,14 @@ class DialogueTradeSystem:
         for turn in recent:
             speaker = turn.get("speaker", "?")
             intent = turn.get("intent", "")
+            ttype = (turn.get("type") or "").strip()
+
+            # Small talk highlights (chat-only or pre-trade rapport)
+            if ttype == "small_talk":
+                msg = (turn.get("message") or "").strip()
+                if msg:
+                    highlights.append(f"- {speaker} said: {msg[:200]}")
+                continue
 
             # Format based on intent
             if intent == "OFFER":
