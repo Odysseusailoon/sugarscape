@@ -1517,17 +1517,32 @@ class DialogueTradeSystem:
         if intent in {"REJECT", "WALK_AWAY"}:
             # Preserve counter-offer if provided (for REJECT with counter-offer)
             counter_offer = parsed.public_offer
-            if not counter_offer or (counter_offer.get("give", {}).get("sugar", 0) == 0 and 
-                                      counter_offer.get("give", {}).get("spice", 0) == 0 and
-                                      counter_offer.get("receive", {}).get("sugar", 0) == 0 and
-                                      counter_offer.get("receive", {}).get("spice", 0) == 0):
+            # FIX: Also preserve private_execute_give from parsed reply
+            private_exec = parsed.private_execute_give or {}
+            
+            has_counter = (
+                counter_offer and (
+                    counter_offer.get("give", {}).get("sugar", 0) > 0 or
+                    counter_offer.get("give", {}).get("spice", 0) > 0 or
+                    counter_offer.get("receive", {}).get("sugar", 0) > 0 or
+                    counter_offer.get("receive", {}).get("spice", 0) > 0
+                )
+            )
+            
+            if not has_counter:
                 counter_offer = {"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}}
+                private_exec = {"sugar": 0, "spice": 0}
+            else:
+                # If counter-offer exists but no private_exec, default to honest execution of counter-offer
+                if not private_exec or (private_exec.get("sugar", 0) == 0 and private_exec.get("spice", 0) == 0):
+                    private_exec = self._safe_int_pair(counter_offer.get("give", {}))
+            
             return _ParsedTradeReply(
                 thought=parsed.thought,
                 say=parsed.say or ("I reject." if intent == "REJECT" else "No deal."),
                 intent=intent,
                 public_offer=counter_offer,
-                private_execute_give={"sugar": 0, "spice": 0},
+                private_execute_give=private_exec,
             )
 
         # Fallback: keep original.

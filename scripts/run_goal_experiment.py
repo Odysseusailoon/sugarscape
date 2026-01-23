@@ -29,6 +29,7 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
                        enable_abstraction_prompt: bool = False,
                        encounter_protocol_mode: str = "full",
                        experiment_name_suffix: str = "",
+                       results_root: str = "results/sugarscape/formal",
                        # LLM Evaluation options
                        enable_llm_evaluation: bool = True,
                        llm_evaluator_model: str = "openai/gpt-4o-mini",
@@ -88,6 +89,10 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         llm_evaluator_provider=llm_evaluator_provider,
     )
 
+    # Ensure debug artifacts are written (trade_dialogues.jsonl, llm_interactions.jsonl, reflections.jsonl, etc.)
+    # Note: individual debug_log_* flags are configured in SugarscapeConfig; enable_debug_logging gates file emission.
+    config.enable_debug_logging = True
+
     # Print ablation status
     if not enable_survival_pressure:
         print("⚠️ ABLATION: Survival pressure DISABLED (agents won't die from starvation)")
@@ -105,6 +110,9 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
         print(f"✓ LLM Evaluation ENABLED (model: {llm_evaluator_model})")
     else:
         print("⚠️ LLM Evaluation DISABLED (behavioral metrics only)")
+        # External moral evaluation can be very API-heavy; disable it when evaluation is disabled.
+        if hasattr(config, "enable_external_moral_evaluation"):
+            config.enable_external_moral_evaluation = False
 
     if use_mixed_identity or identity_distribution:
         config.enable_origin_identity = True
@@ -155,7 +163,8 @@ def run_goal_experiment(goal_preset: str, ticks: int = 100, seed: int = 42,
     exp_name = f"goal_{goal_preset}"
     if experiment_name_suffix:
         exp_name += f"_{experiment_name_suffix}"
-    sim = SugarSimulation(config=config, experiment_name=exp_name)
+    Path(results_root).mkdir(parents=True, exist_ok=True)
+    sim = SugarSimulation(config=config, experiment_name=exp_name, experiment_base_dir=results_root)
 
     print("\nInitial Stats:")
     initial_stats = sim.get_stats()
@@ -275,6 +284,9 @@ def parse_args():
     parser.add_argument("--ticks", type=int, default=100,
                         help="Number of simulation ticks (default: 100)")
 
+    parser.add_argument("--results-root", type=str, default="results/sugarscape/formal",
+                        help="Base directory for experiment outputs (default: results/sugarscape/formal)")
+
     parser.add_argument("--population", type=int, default=100,
                         help="Initial population size (default: 100)")
 
@@ -367,8 +379,8 @@ def parse_identity_distribution(dist_str: str) -> dict:
         identity_type = parts[0].strip().lower()
         percentage = float(parts[1].strip()) / 100.0  # Convert percentage to fraction
         
-        if identity_type not in ["altruist", "exploiter", "survivor"]:
-            raise ValueError(f"Unknown identity type: {identity_type}. Valid: altruist, exploiter, survivor")
+        if identity_type not in ["altruist", "exploiter", "survivor", "pure_altruist"]:
+            raise ValueError(f"Unknown identity type: {identity_type}. Valid: altruist, exploiter, survivor, pure_altruist")
         
         result[identity_type] = percentage
     
@@ -435,6 +447,7 @@ def main():
                           enable_abstraction_prompt=args.enable_abstraction_prompt,
                           encounter_protocol_mode=args.encounter_protocol_mode,
                           experiment_name_suffix=args.experiment_suffix,
+                          results_root=args.results_root,
                           enable_llm_evaluation=not args.no_llm_evaluation,
                           llm_evaluator_model=args.evaluator_model,
                           llm_evaluator_provider=args.evaluator_provider,

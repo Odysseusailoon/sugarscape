@@ -30,11 +30,17 @@ except ImportError:
 class SugarSimulation:
     """Main simulation controller for Sugarscape."""
 
-    def __init__(self, config: SugarscapeConfig = None, agent_factory=None, experiment_name: str = "baseline"):
+    def __init__(
+        self,
+        config: SugarscapeConfig = None,
+        agent_factory=None,
+        experiment_name: str = "baseline",
+        experiment_base_dir: str = "results/sugarscape",
+    ):
         self.config = config or SugarscapeConfig()
 
         # Experiment logging
-        self.logger = ExperimentLogger(experiment_type=experiment_name, config=self.config)
+        self.logger = ExperimentLogger(base_dir=experiment_base_dir, experiment_type=experiment_name, config=self.config)
 
         # Initialize Debug Logger
         self.debug_logger = DebugLogger(
@@ -75,6 +81,7 @@ class SugarSimulation:
                 from redblackbench.providers.vllm_provider import VLLMProvider
                 self.llm_provider = VLLMProvider(
                     model=self.config.llm_provider_model,
+                    base_url=getattr(self.config, "llm_vllm_base_url", "http://localhost:8000/v1"),
                     max_tokens=2048
                 )
             else:
@@ -92,6 +99,7 @@ class SugarSimulation:
                 from redblackbench.providers.vllm_provider import VLLMProvider
                 self.evaluator_provider = VLLMProvider(
                     model=self.config.llm_evaluator_model,
+                    base_url=getattr(self.config, "llm_vllm_base_url", "http://localhost:8000/v1"),
                     max_tokens=2048
                 )
             else:
@@ -113,7 +121,11 @@ class SugarSimulation:
             eval_model = getattr(self.config, "external_moral_evaluator_model", "openai/gpt-4o-mini")
             if eval_provider_type == "vllm":
                 from redblackbench.providers.vllm_provider import VLLMProvider
-                self.moral_evaluator_provider = VLLMProvider(model=eval_model, max_tokens=2048)
+                self.moral_evaluator_provider = VLLMProvider(
+                    model=eval_model,
+                    base_url=getattr(self.config, "llm_vllm_base_url", "http://localhost:8000/v1"),
+                    max_tokens=2048,
+                )
             else:
                 self.moral_evaluator_provider = OpenRouterProvider(model=eval_model, max_tokens=2048)
 
@@ -172,16 +184,40 @@ class SugarSimulation:
         """Create and place a new agent with random attributes."""
         # Random attributes
         w0 = self.rng.randint(*self.config.initial_wealth_range)
-        m = self.rng.randint(*self.config.metabolism_range)
         v = self.rng.randint(*self.config.vision_range)
         max_age = self.rng.randint(*self.config.max_age_range)
 
-        # Spice attributes (if enabled)
+        # Metabolism attributes - with optional resource specialization
         spice = 0
         m_spice = 0
-        if self.config.enable_spice:
+        
+        if self.config.enable_spice and getattr(self.config, 'enable_resource_specialization', False):
+            # Resource Specialization Mode:
+            # 50% Sugar specialists (high sugar metabolism, low spice metabolism)
+            # 50% Spice specialists (high spice metabolism, low sugar metabolism)
+            # This creates complementary demand for meaningful trade!
             spice = self.rng.randint(*self.config.initial_spice_range)
-            m_spice = self.rng.randint(*self.config.metabolism_spice_range)
+            
+            specialization_ratio = getattr(self.config, 'specialization_ratio', 0.5)
+            high_range = getattr(self.config, 'specialization_high_metabolism', (3, 4))
+            low_range = getattr(self.config, 'specialization_low_metabolism', (1, 2))
+            
+            if self.rng.random() < specialization_ratio:
+                # Sugar specialist: high sugar need, low spice need
+                # → Will seek to trade Spice for Sugar
+                m = self.rng.randint(*high_range)
+                m_spice = self.rng.randint(*low_range)
+            else:
+                # Spice specialist: high spice need, low sugar need
+                # → Will seek to trade Sugar for Spice
+                m = self.rng.randint(*low_range)
+                m_spice = self.rng.randint(*high_range)
+        else:
+            # Original independent random metabolism (no specialization)
+            m = self.rng.randint(*self.config.metabolism_range)
+            if self.config.enable_spice:
+                spice = self.rng.randint(*self.config.initial_spice_range)
+                m_spice = self.rng.randint(*self.config.metabolism_spice_range)
 
         # Determine Persona
         persona = "A" # default
@@ -265,6 +301,10 @@ class SugarSimulation:
         self.agents.append(agent)
         self.env.add_agent(agent)
         self.env.initialize_agent_reputation(agent.agent_id)
+        
+        # Initialize debug logging for this agent
+        if self.debug_logger:
+            self.debug_logger.init_agent(agent.agent_id)
 
     def step(self):
         """Execute one simulation tick."""
@@ -302,8 +342,19 @@ class SugarSimulation:
 
         # Phase 1a. Process Standard Agents (Sequential, Fast): Move + Harvest (no metabolism yet)
         for agent in std_agents:
+            # Track sugar/spice before harvest to calculate what was gathered
+            sugar_before = agent.wealth
+            spice_before = agent.spice
+            
             agent._move_and_harvest(self.env)
             agent._update_metrics(self.env)
+            
+            # Update harvest stats in debug logger
+            if self.debug_logger:
+                sugar_gathered = agent.wealth - sugar_before
+                spice_gathered = agent.spice - spice_before
+                if sugar_gathered > 0 or spice_gathered > 0:
+                    self.debug_logger.update_agent_harvest(agent.agent_id, sugar_gathered, spice_gathered)
 
         # Phase 1b. Process LLM Agents
         # When rule_based_movement=True: Use same fast rule-based logic as standard agents (token-saving)
@@ -314,9 +365,21 @@ class SugarSimulation:
                 # LLM agents use parent class's deterministic movement logic.
                 # This saves tokens for social interactions (encounters + reflection).
                 for agent in llm_agents:
+                    # Track sugar/spice before harvest to calculate what was gathered
+                    sugar_before = agent.wealth
+                    spice_before = agent.spice
+                    
                     # Use the base SugarAgent's rule-based movement
                     SugarAgent._move_and_harvest(agent, self.env)
                     agent._update_metrics(self.env)
+                    
+                    # Calculate what was harvested
+                    sugar_harvested = agent.wealth - sugar_before
+                    spice_harvested = agent.spice - spice_before
+                    
+                    # Update harvest stats in debug logger
+                    if self.debug_logger and (sugar_harvested > 0 or spice_harvested > 0):
+                        self.debug_logger.update_agent_harvest(agent.agent_id, sugar_harvested, spice_harvested)
 
                     # Still record move history for LLM agents (for context in future interactions)
                     if hasattr(agent, 'move_history'):
@@ -326,8 +389,8 @@ class SugarSimulation:
                             "action": "rule_based",  # Mark as rule-based decision
                             "wealth": agent.wealth,
                             "spice": agent.spice,
-                            "sugar_harvested": 0,  # Already harvested in _move_and_harvest
-                            "spice_harvested": 0,
+                            "sugar_harvested": sugar_harvested,
+                            "spice_harvested": spice_harvested,
                         })
             else:
                 # === LLM-BASED MOVEMENT (Legacy Mode - Expensive) ===
@@ -437,6 +500,13 @@ class SugarSimulation:
                     target_pos = desired.get(agent)
 
                     rewards = agent._harvest_and_update_metrics(self.env)
+                    
+                    # Update harvest stats in debug logger
+                    if self.debug_logger:
+                        sugar_harvested = rewards["sugar_harvested"]
+                        spice_harvested = rewards.get("spice_harvested", 0)
+                        if sugar_harvested > 0 or spice_harvested > 0:
+                            self.debug_logger.update_agent_harvest(agent.agent_id, sugar_harvested, spice_harvested)
 
                     # Record move history for LLM agents
                     if hasattr(agent, 'move_history'):
@@ -548,6 +618,8 @@ class SugarSimulation:
                         metabolism=agent.metabolism,
                         metabolism_spice=agent.metabolism_spice,
                         lifetime_ticks=self.tick,  # Approximate
+                        unique_cells_visited=len(agent.visited_cells),
+                        max_displacement=agent.metrics.get("displacement", 0.0),
                     )
                     self.debug_logger.log_death(death_record)
 
@@ -566,7 +638,7 @@ class SugarSimulation:
                                     # Use first 200 chars of final reflection as last words
                                     reflection = parsed.get("final_reflection", "")
                                     if reflection:
-                                        last_words = reflection[:200] + ("..." if len(reflection) > 200 else "")
+                                        last_words = reflection[:1000] + ("..." if len(reflection) > 200 else "")
                     
                     for nearby_agent in self.agents:
                         if nearby_agent == agent or not nearby_agent.alive:
@@ -1211,6 +1283,7 @@ class SugarSimulation:
                 from redblackbench.providers.vllm_provider import VLLMProvider
                 sim.llm_provider = VLLMProvider(
                     model=config.llm_provider_model,
+                    base_url=getattr(config, "llm_vllm_base_url", "http://localhost:8000/v1"),
                     max_tokens=2048
                 )
             else:

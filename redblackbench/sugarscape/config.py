@@ -12,12 +12,12 @@ class SugarscapeConfig:
     # Sugar distribution
     # Classic topography has two peaks with max capacity 4
     max_sugar_capacity: int = 4
-    sugar_growback_rate: int = 1  # alpha
+    sugar_growback_rate: int = 2  # alpha (doubled for sustainability)
 
     # Spice distribution (Optional, for Sugarscape 2)
     enable_spice: bool = False
     max_spice_capacity: int = 4
-    spice_growback_rate: int = 1
+    spice_growback_rate: int = 2  # doubled for sustainability
 
     # Trade (Optional)
     enable_trade: bool = False
@@ -120,6 +120,17 @@ class SugarscapeConfig:
     metabolism_spice_range: Tuple[int, int] = (1, 4) # m_spice
     vision_range: Tuple[int, int] = (1, 6)           # v
     max_age_range: Tuple[int, int] = (60, 100)       # max_age
+
+    # Resource Specialization (Recommended for meaningful trade)
+    # When True: Agents are either Sugar specialists or Spice specialists
+    # - Sugar specialist: high sugar metabolism (3-4), low spice metabolism (1-2)
+    # - Spice specialist: high spice metabolism (3-4), low sugar metabolism (1-2)
+    # This creates complementary demand that makes trade mutually beneficial!
+    # When False: Metabolism is independent random (67% end up "balanced" with no trade incentive)
+    enable_resource_specialization: bool = True
+    specialization_ratio: float = 0.5  # Fraction of Sugar specialists (rest are Spice specialists)
+    specialization_high_metabolism: Tuple[int, int] = (3, 4)  # High demand resource
+    specialization_low_metabolism: Tuple[int, int] = (1, 2)   # Low demand resource
 
     # LLM Agent Configuration
     enable_llm_agents: bool = False
@@ -340,29 +351,60 @@ SUCCESS = Maximum wealth. Measured by YOUR Sugar + Spice totals.""",
 
             "altruist": """Your goal: Everyone survives, including yourself.
 
+CORE PRINCIPLE: HONESTY IS NON-NEGOTIABLE
+- If you make a promise (public offer), you MUST honor it exactly
+- Breaking promises destroys trust and harms the community
+- A promise made is a debt owed
+
 DECISION PRIORITY:
-1. CRITICAL SELF: Save yourself first (dead helpers can't help)
-2. CRITICAL OTHER: See someone CRITICAL? Move toward them to help
+1. CRITICAL OTHER: Someone CRITICAL nearby? Move toward them to help
+2. CRITICAL SELF: Ensure your own survival (but never by deception)
 3. SURPLUS SELF + LOW OTHER: Seek out struggling agents
 4. Otherwise: Gather resources for future helping
 
 MOVEMENT:
-- When comfortable, prioritize moving toward struggling agents
+- Prioritize moving toward struggling agents
 - Check agent status: CRITICAL means they'll die soon without help
 - A good position near someone in need beats a great position alone
 
 TRADING:
+- ALWAYS honor your commitments - private_execute_give MUST match your public offer
 - If they're worse off than you: Give favorable terms
 - If they're CRITICAL: Accept bad deals to save them
 - Your wealth means nothing if others starve
 
-SUCCESS = Everyone survives. Measured by group welfare, especially the worst-off.""",
+SUCCESS = Everyone survives WITH trust intact. Measured by group welfare AND your reputation.""",
+
+            # Pure altruist: No self-preservation override, absolute commitment to others
+            "pure_altruist": """Your goal: Others survive, even at your expense.
+
+CORE PRINCIPLE: OTHERS FIRST, ALWAYS HONEST
+- You exist to help others survive
+- Your promises are sacred - NEVER break a commitment
+- Your life matters less than your integrity
+
+DECISION PRIORITY:
+1. CRITICAL OTHER: Someone needs help? That's your #1 priority
+2. STRUGGLING OTHER: Help before they become critical
+3. SELF: Only if no one else needs you
+
+MOVEMENT:
+- Always move toward those who need help most
+- Ignore good resource cells if someone needs you elsewhere
+
+TRADING:
+- ALWAYS give what you promised (private_execute_give = your public offer)
+- Offer generous terms - take less than fair share
+- If they're struggling: Give freely, expect nothing back
+- Deception is NEVER acceptable, even for survival
+
+SUCCESS = Others thrive. You succeed when the weakest among you is safe.""",
         }
 
         # Aliases for backward compatibility
         goals["egalitarian"] = goals["altruist"]
         goals["utilitarian"] = goals["altruist"]
-        goals["samaritan"] = goals["altruist"]
+        goals["samaritan"] = goals["pure_altruist"]  # Samaritan -> pure altruist
         goals["rawlsian"] = goals["altruist"]
 
         if preset in goals:

@@ -4,8 +4,7 @@ Provides integration with vLLM inference servers through OpenAI-compatible API.
 """
 
 import asyncio
-import os
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from redblackbench.providers.base import BaseLLMProvider, ProviderConfig
 
@@ -68,18 +67,23 @@ class VLLMProvider(BaseLLMProvider):
         self,
         system_prompt: str,
         messages: List[dict],
-        chat_template_kwargs: Optional[dict] = None,
+        **kwargs: Any,
     ) -> str:
         """Generate a response from vLLM server.
 
         Args:
             system_prompt: The system message for the conversation
             messages: List of message dictionaries with 'role' and 'content' keys
-            chat_template_kwargs: Optional kwargs for chat template (e.g., {"enable_thinking": False} for Qwen3)
+            **kwargs: Optional extras:
+                - max_tokens: override configured max tokens for this call
+                - chat_template_kwargs: vLLM chat template kwargs (e.g., {"enable_thinking": False} for Qwen3)
 
         Returns:
             The generated response text
         """
+        max_tokens_override = kwargs.get("max_tokens", None)
+        chat_template_kwargs = kwargs.get("chat_template_kwargs", None)
+
         # Build messages list with system prompt
         api_messages = [{"role": "system", "content": system_prompt}]
         api_messages.extend(messages)
@@ -90,7 +94,14 @@ class VLLMProvider(BaseLLMProvider):
 
         context_limit = 32768  # Qwen3-14B supports 32k context
         available_tokens = context_limit - estimated_input_tokens - 100  # buffer
-        effective_max_tokens = min(self.config.max_tokens, max(256, available_tokens))
+        configured_max = int(self.config.max_tokens)
+        if max_tokens_override is not None:
+            try:
+                configured_max = int(max_tokens_override)
+            except Exception:
+                configured_max = int(self.config.max_tokens)
+
+        effective_max_tokens = min(configured_max, max(256, available_tokens))
 
         # Lazily create shared client for connection reuse and proper batching
         # This enables vLLM's continuous batching when multiple requests come in

@@ -1,7 +1,7 @@
-"""Run Sugarscape experiments with SFT v2 fine-tuned model.
+"""Run Sugarscape experiments with an SFT LoRA adapter via vLLM.
 
 This script is identical to run_goal_experiment.py but uses the
-redblackbench-qwen3-14b-sft-v2 LoRA adapter as the backbone model.
+LoRA adapter served by vLLM's OpenAI-compatible server as the agent model.
 
 The vLLM server must be started with LoRA support:
   ./scripts/setup_and_run.sh start
@@ -19,8 +19,9 @@ from redblackbench.sugarscape.simulation import SugarSimulation
 from redblackbench.sugarscape.config import SugarscapeConfig
 
 
-# SFT v2 LoRA adapter name (must match --lora-modules name in vLLM server)
-SFT_MODEL_NAME = "redblackbench-qwen3-14b-sft-v2"
+# LoRA adapter alias on the vLLM server (must match the left-hand name in --lora-modules NAME=/path).
+# Defaults to the alias used by ./scripts/setup_and_run.sh (LORA_ADAPTER_NAME).
+DEFAULT_SFT_LORA_NAME = os.environ.get("SFT_LORA_NAME", "Qwen3-14B-LoRA")
 
 
 def run_goal_experiment(
@@ -34,7 +35,7 @@ def run_goal_experiment(
     model: str = None,
     vllm_url: str = "http://localhost:8000/v1"
 ):
-    """Run a single experiment with a specific goal preset using SFT v2 model.
+    """Run a single experiment with a specific goal preset using an SFT LoRA model.
 
     Default settings optimized for emergent phenomena:
     - 100 agents (critical mass for complex interactions)
@@ -57,10 +58,10 @@ def run_goal_experiment(
     print(f"Running Goal Experiment (SFT v2): {goal_preset.upper()}")
     print(f"{'='*60}")
 
-    # Use SFT v2 model by default
+    # Use SFT LoRA adapter by default
     if model is None:
         if provider_type == "vllm":
-            model = SFT_MODEL_NAME
+            model = DEFAULT_SFT_LORA_NAME
         else:
             model = "openai/gpt-4o"
 
@@ -100,7 +101,7 @@ def run_goal_experiment(
 
     print(f"Goal: {goal_preset}")
     print(f"Provider: {provider_type} ({model})")
-    print(f"Model Type: SFT v2 Fine-tuned")
+    print(f"Model Type: SFT LoRA (served by vLLM)")
     print(f"Goal Prompt: {config.llm_goal_prompt[:100]}...")
     print(f"Seed: {seed}, Ticks: {ticks}, Population: {population}")
     print(f"Trade: {'enabled' if enable_trade else 'disabled'}, Spice: enabled")
@@ -269,10 +270,10 @@ def compare_goals(goals_to_test, ticks=300, seed=42, population=100, enable_trad
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Run Sugarscape Goal Experiments with SFT v2 Fine-tuned Model",
+        description="Run Sugarscape Goal Experiments with an SFT LoRA adapter (via vLLM)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-This script uses the SFT v2 fine-tuned LoRA adapter by default.
+This script uses a vLLM-served LoRA adapter by default.
 Make sure the vLLM server is running with LoRA support:
   ./scripts/setup_and_run.sh start
 
@@ -326,7 +327,8 @@ Examples:
                         help="LLM provider type (default: vllm for SFT model)")
 
     parser.add_argument("--model", type=str, default=None,
-                        help=f"Model name/path (default: {SFT_MODEL_NAME})")
+                        help=f"LoRA adapter alias on the vLLM server (default: {DEFAULT_SFT_LORA_NAME}). "
+                             f"Must match --lora-modules NAME=... used when starting vLLM.")
 
     parser.add_argument("--vllm-url", type=str, default="http://localhost:8000/v1",
                         help="vLLM server URL (default: http://localhost:8000/v1)")
