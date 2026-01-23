@@ -16,6 +16,7 @@ from redblackbench.providers.openrouter_provider import OpenRouterProvider
 from redblackbench.sugarscape.trajectory import SugarTrajectory, SugarActionRecord
 from redblackbench.sugarscape.names import NameGenerator
 from redblackbench.sugarscape.welfare import WelfareCalculator
+from redblackbench.sugarscape.evaluator import BehaviorEvaluator
 
 # Import plotting module only if matplotlib is available
 try:
@@ -75,6 +76,28 @@ class SugarSimulation:
                     model=self.config.llm_provider_model,
                     max_tokens=2048
                 )
+
+        # Initialize Evaluator Provider if enabled
+        self.evaluator_provider = None
+        self.evaluator = None
+        if getattr(self.config, 'enable_llm_evaluation', False):
+            eval_provider_type = getattr(self.config, 'llm_evaluator_provider', 'openrouter')
+            if eval_provider_type == "vllm":
+                from redblackbench.providers.vllm_provider import VLLMProvider
+                self.evaluator_provider = VLLMProvider(
+                    model=self.config.llm_evaluator_model,
+                    max_tokens=2048
+                )
+            else:
+                self.evaluator_provider = OpenRouterProvider(
+                    model=self.config.llm_evaluator_model,
+                    max_tokens=2048
+                )
+            
+            self.evaluator = BehaviorEvaluator(
+                provider=self.evaluator_provider,
+                use_llm_evaluation=True
+            )
 
         self.agents: List[SugarAgent] = []
         self.tick = 0
@@ -807,6 +830,36 @@ class SugarSimulation:
                 final_leaning = agent.self_identity_leaning
                 print(f"  - {agent.name}: Born '{origin}' → survived as '{assessment}' (final leaning: {final_leaning:.2f})")
 
+    def _run_evaluation(self) -> None:
+        """Run independent behavioral evaluation for all agents.
+        
+        Uses BehaviorEvaluator to assess agents based on trade logs and behavior,
+        optionally using a separate LLM (default: gpt-4o-mini).
+        """
+        if not self.evaluator:
+            return
+
+        print(f"[EVALUATION] Running independent behavioral evaluation for {len(self.agents)} agents...")
+        
+        # Run evaluation
+        results = self._event_loop.run_until_complete(
+            self.evaluator.async_evaluate_all(self.agents)
+        )
+        
+        # Save results
+        eval_path = self.logger.run_dir / "behavioral_evaluation.json"
+        import json
+        with open(eval_path, "w") as f:
+            json.dump(results, f, indent=2)
+            
+        print(f"[EVALUATION] Saved to {eval_path}")
+        
+        # Print summary
+        avg_coop = np.mean([r["behavioral_metrics"]["cooperation_score"] for r in results])
+        avg_exploit = np.mean([r["behavioral_metrics"]["exploitation_score"] for r in results])
+        print(f"[EVALUATION] Average Cooperation Score: {avg_coop:.2f}")
+        print(f"[EVALUATION] Average Exploitation Score: {avg_exploit:.2f}")
+
     def run(self, steps: int = None):
         """Run for a number of steps with automatic checkpointing.
 
@@ -841,6 +894,9 @@ class SugarSimulation:
 
         # Run final reports for surviving agents before cleanup
         self._run_final_reports()
+
+        # Run independent evaluation
+        self._run_evaluation()
 
         # Save Trajectory
         traj_filename = f"trajectory_{self.logger.experiment_id}.json"
@@ -1209,6 +1265,9 @@ class SugarSimulation:
 
         # Run final reports for surviving agents before cleanup
         self._run_final_reports()
+
+        # Run independent evaluation
+        self._run_evaluation()
 
         # Save trajectory
         traj_filename = f"trajectory_{self.logger.experiment_id}.json"

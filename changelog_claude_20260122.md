@@ -57,3 +57,20 @@ Changed `enable_origin_identity` default from `False` to `True` so that:
 
 ### Rationale:
 These warnings were biasing agent behavior by explicitly telling them to change their policies when facing survival pressure. Removing them allows agents to make more autonomous decisions based on their own goals and identity, rather than being guided by the simulation framework.
+
+---
+
+## Enabled Independent LLM Evaluation
+
+**Files:**
+- `redblackbench/sugarscape/config.py`
+- `redblackbench/sugarscape/simulation.py`
+- `redblackbench/sugarscape/evaluator.py`
+
+### Changes:
+1. **Config**: Added `enable_llm_evaluation` (default True) and `llm_evaluator_model` (default "openai/gpt-4o-mini").
+2. **Simulation**: Added `_run_evaluation()` method called at simulation end.
+3. **Evaluator**: Updated `compute_behavioral_metrics` to use `decider_id` in `NO_TRADE` events for accurate rejection attribution.
+
+### Purpose:
+Provides independent, objective assessment of agent behavior (trustworthiness, cooperativeness, etc.) using a separate LLM model, avoiding self-report bias.

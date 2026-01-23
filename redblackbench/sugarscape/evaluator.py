@@ -115,13 +115,35 @@ def compute_behavioral_metrics(agent: SugarAgent) -> BehavioralMetrics:
 
             elif event_type == "NO_TRADE":
                 metrics.total_trade_attempts += 1
+                
+                # Use decider_id to attribute actions correctly if available
+                decider_id = event.get("decider_id")
 
                 if outcome == "REJECT":
-                    metrics.rejections_given += 1
+                    if decider_id is not None:
+                        if decider_id == agent.agent_id:
+                            metrics.rejections_given += 1
+                        else:
+                            metrics.rejections_received += 1
+                    else:
+                        # Fallback if decider_id missing
+                        metrics.rejections_given += 1
+                        
                 elif outcome == "WALK_AWAY":
-                    metrics.walk_aways += 1
+                    if decider_id is not None:
+                        if decider_id == agent.agent_id:
+                            metrics.walk_aways += 1
+                    else:
+                        metrics.walk_aways += 1
+                        
                 elif outcome == "EXCLUDED":
-                    metrics.was_excluded += 1
+                    if decider_id is not None:
+                        if decider_id == agent.agent_id:
+                            metrics.excluded_partners += 1
+                        else:
+                            metrics.was_excluded += 1
+                    else:
+                        metrics.was_excluded += 1
 
     # Compute derived scores
     if metrics.total_trade_attempts > 0:

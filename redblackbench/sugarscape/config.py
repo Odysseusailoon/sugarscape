@@ -53,6 +53,12 @@ class SugarscapeConfig:
     enable_reflection: bool = True  # Enable post-encounter reflection system
     reflection_max_tokens: int = 256  # Max tokens for reflection JSON output
 
+    # LLM Evaluation (Optional)
+    # Independent evaluation of agent behavior using a separate LLM model
+    enable_llm_evaluation: bool = True  # Default: True (Recommended)
+    llm_evaluator_model: str = "openai/gpt-4o-mini"  # Default evaluator model (cheaper/faster)
+    llm_evaluator_provider: str = "openrouter"  # Provider for evaluator
+
     # Identity Review System: periodic self-assessment of altruist/exploiter identity
     enable_identity_review: bool = True  # Enable identity reviews every N ticks
     identity_review_interval: int = 10  # Run identity review every N ticks
