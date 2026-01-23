@@ -423,7 +423,8 @@ class LLMSugarAgent(SugarAgent):
             result["raw_response"] = response
 
             # Parse the response
-            parsed = parse_questionnaire_response(response)
+            cleaned = self._strip_thinking_blocks(response)
+            parsed = parse_questionnaire_response(cleaned)
             result["parsed"] = parsed
 
             # Extract scores for easy access
@@ -467,7 +468,9 @@ class LLMSugarAgent(SugarAgent):
 
         # Get events summary
         events_summary = self.get_pending_events_summary()
-        events = self.clear_pending_events()
+        # Snapshot events, but do NOT clear until we have a response.
+        # Otherwise transient provider failures will silently drop events.
+        events_snapshot = list(self.pending_reflection_events)
 
         # Build prompts
         system_prompt, user_prompt = build_event_triggered_reflection_prompt(
@@ -479,7 +482,7 @@ class LLMSugarAgent(SugarAgent):
 
         result = {
             "tick": tick,
-            "events": events,
+            "events": events_snapshot,
             "events_summary": events_summary,
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
@@ -496,6 +499,9 @@ class LLMSugarAgent(SugarAgent):
             )
 
             result["raw_response"] = response
+            # Now that we have a response, consider events "processed" and clear.
+            events = self.clear_pending_events()
+            result["events"] = events
 
             # Parse response for updates (use same parser as identity review)
             parsed = parse_identity_review_response(response)
@@ -509,11 +515,12 @@ class LLMSugarAgent(SugarAgent):
         except Exception as e:
             print(f"Event reflection error for {self.name}: {e}")
             result["error"] = str(e)
+            # Keep pending events so we can retry next tick.
 
         # Store in history
         self.event_reflection_history.append({
             "tick": tick,
-            "events": events,
+            "events": result.get("events", events_snapshot),
             "reflection": result.get("parsed", {}).get("reflection", "") if result.get("parsed") else "",
             "updates_applied": result.get("updates_applied", {}),
         })

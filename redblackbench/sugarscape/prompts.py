@@ -705,9 +705,15 @@ Also provide a brief (1 sentence) explanation for each answer.
 IMPORTANT: Answer based on your CURRENT beliefs, not what you think you should believe.
 If you genuinely have no opinion yet, answer 4 (neutral/undecided)."""
 
+    starting_state_line = (
+        "You have not yet interacted with anyone. Answer based on your starting beliefs."
+        if tick == 0
+        else "You have interacted with others. Answer based on your CURRENT beliefs right now."
+    )
+
     user_prompt = f"""# WORLDVIEW QUESTIONNAIRE (Tick {tick})
 
-You have not yet interacted with anyone. Answer based on your starting beliefs.
+{starting_state_line}
 {questions_text}
 
 Respond in JSON format:
@@ -734,28 +740,54 @@ def parse_questionnaire_response(response: str) -> Dict[str, Any]:
     import json
     import re
 
-    # Try to extract JSON from response
-    json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
-    if json_match:
-        json_str = json_match.group(1)
-    else:
-        # Try to find raw JSON
-        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(0)
-        else:
-            return {"error": "No JSON found", "raw": response}
+    def _extract_best_json_object(text: str) -> Dict[str, Any]:
+        """Best-effort extraction of a JSON object from free-form text.
 
-    try:
-        parsed = json.loads(json_str)
-        # Validate scores are in 1-7 range
-        for qid in ["Q1_trust", "Q2_cooperation", "Q3_fairness", "Q4_scarcity", "Q5_self_vs_others"]:
-            if qid in parsed:
-                score = parsed[qid].get("score", 4)
-                parsed[qid]["score"] = max(1, min(7, int(score)))
+        We prefer fenced ```json blocks, but fall back to scanning for the
+        longest decodable JSON object starting at any '{' position.
+        """
+        # Prefer fenced JSON blocks if present
+        fenced = re.search(r"```json\\s*(.*?)\\s*```", text, re.DOTALL | re.IGNORECASE)
+        if fenced:
+            candidate = fenced.group(1).strip()
+            try:
+                obj = json.loads(candidate)
+                return obj if isinstance(obj, dict) else {"error": "JSON is not an object", "raw": text}
+            except Exception:
+                # Fall through to scanning
+                pass
+
+        decoder = json.JSONDecoder()
+        starts = [i for i, ch in enumerate(text) if ch == "{"]
+        best_obj = None
+        best_len = -1
+        for i in starts:
+            try:
+                obj, end = decoder.raw_decode(text[i:])
+                if isinstance(obj, dict) and end > best_len:
+                    best_obj = obj
+                    best_len = end
+            except Exception:
+                continue
+
+        if best_obj is None:
+            return {"error": "No JSON object found", "raw": text}
+        return best_obj
+
+    parsed = _extract_best_json_object(response)
+    if not isinstance(parsed, dict) or parsed.get("error"):
         return parsed
-    except json.JSONDecodeError as e:
-        return {"error": str(e), "raw": response}
+
+    # Validate scores are in 1-7 range
+    for qid in ["Q1_trust", "Q2_cooperation", "Q3_fairness", "Q4_scarcity", "Q5_self_vs_others"]:
+        if qid in parsed and isinstance(parsed[qid], dict):
+            score = parsed[qid].get("score", 4)
+            try:
+                score_int = int(score)
+            except Exception:
+                score_int = 4
+            parsed[qid]["score"] = max(1, min(7, score_int))
+    return parsed
 
 
 # ============================================================================

@@ -463,7 +463,7 @@ class SugarSimulation:
             pre_spice = agent.spice
             pre_age = agent.age
 
-            agent.metabolize_age_and_check_death(self.env)
+            agent.metabolize_age_and_check_death(self.env, tick=self.tick)
             if not agent.alive:
                 # Determine death cause
                 death_cause = self._determine_death_cause(agent, pre_wealth, pre_spice, pre_age)

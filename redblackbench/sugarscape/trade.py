@@ -377,6 +377,8 @@ class DialogueTradeSystem:
                     outcome="EXCLUSION",
                     pending_offer=None,
                     conversation=full_conversation,
+                    decider_id=excluder.agent_id,
+                    decider_name=excluder.name,
                 )
                 return
 
@@ -649,7 +651,14 @@ class DialogueTradeSystem:
 
             if parsed.intent in {"REJECT", "WALK_AWAY"}:
                 print(f"[NEGOTIATION] {speaker.name} {parsed.intent}ed: {a.name} <-> {b.name}")
-                self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer, conversation=full_conversation)
+                self._record_no_trade(
+                    a, b, tick,
+                    outcome=parsed.intent,
+                    pending_offer=pending_offer,
+                    conversation=full_conversation,
+                    decider_id=speaker.agent_id,
+                    decider_name=speaker.name,
+                )
 
                 await self._run_reflection_for_pair(
                     agent_a=a,
@@ -940,7 +949,14 @@ class DialogueTradeSystem:
 
             if parsed.intent in {"REJECT", "WALK_AWAY"}:
                 print(f"[TRADE] {speaker.name} {parsed.intent}ed negotiation with {listener.name}")
-                self._record_no_trade(a, b, tick, outcome=parsed.intent, pending_offer=pending_offer, conversation=full_conversation)
+                self._record_no_trade(
+                    a, b, tick,
+                    outcome=parsed.intent,
+                    pending_offer=pending_offer,
+                    conversation=full_conversation,
+                    decider_id=speaker.agent_id,
+                    decider_name=speaker.name,
+                )
 
                 # Post-encounter reflection for rejections/walkways
                 await self._run_reflection_for_pair(
@@ -1730,6 +1746,8 @@ class DialogueTradeSystem:
         outcome: str,
         pending_offer: Optional[Dict[str, Dict[str, int]]],
         conversation: Optional[List[Dict[str, str]]] = None,
+        decider_id: Optional[int] = None,
+        decider_name: Optional[str] = None,
     ) -> None:
         pending = pending_offer or {"give": {"sugar": 0, "spice": 0}, "receive": {"sugar": 0, "spice": 0}}
         a.get_partner_trade_log(b.agent_id, maxlen=self.memory_maxlen).append(
@@ -1740,6 +1758,8 @@ class DialogueTradeSystem:
                 "type": "NO_TRADE",
                 "outcome": outcome,
                 "pending_offer": pending,
+                "decider_id": decider_id,
+                "decider_name": decider_name,
                 "conversation": conversation or [],
             }
         )
@@ -1751,6 +1771,8 @@ class DialogueTradeSystem:
                 "type": "NO_TRADE",
                 "outcome": outcome,
                 "pending_offer": pending,
+                "decider_id": decider_id,
+                "decider_name": decider_name,
                 "conversation": conversation or [],
             }
         )

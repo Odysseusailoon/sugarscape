@@ -453,7 +453,7 @@ These values evolved from your experiences."""
         # before this phase. This method keeps the classic single-agent ordering.
         self.metabolize_age_and_check_death(env)
 
-    def metabolize_age_and_check_death(self, env: "SugarEnvironment") -> None:
+    def metabolize_age_and_check_death(self, env: "SugarEnvironment", tick: int = None) -> None:
         """Apply metabolism, age increment, and death condition.
 
         When enable_survival_pressure=False:
@@ -482,13 +482,14 @@ These values evolved from your experiences."""
 
         # Record critical resource event if just became critical
         if hasattr(self, 'record_reflection_event'):
+            event_tick = tick if tick is not None else (env.tick if hasattr(env, 'tick') else 0)
             if is_critical_sugar and not was_critical_sugar:
-                self.record_reflection_event("resources_critical", env.tick if hasattr(env, 'tick') else 0, {
+                self.record_reflection_event("resources_critical", event_tick, {
                     "resource": "sugar",
                     "amount": self.wealth,
                 })
             if is_critical_spice and not was_critical_spice:
-                self.record_reflection_event("resources_critical", env.tick if hasattr(env, 'tick') else 0, {
+                self.record_reflection_event("resources_critical", event_tick, {
                     "resource": "spice",
                     "amount": self.spice,
                 })
