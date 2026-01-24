@@ -340,3 +340,130 @@ See `redblackbench/sugarscape/EXPERIMENTS.md` for:
 - Mixed-society outcome analysis (redemption vs corruption)
 - Tables: Soil Effect, Seed Effect, Enlightenment Speed, Cause of Death
 - Normie dialogue ablations (Experiments 11-14)
+
+---
+
+## Current Experiment Settings (V4/V5)
+
+### V4 Experiments (Completed)
+- **Grid**: 20x20 (400 cells)
+- **Population**: 100 agents
+- **Ticks**: 100
+- **Trust Mechanism**: `hybrid` (personal + global reputation)
+- **Resource Specialization**: Enabled
+- **LLM Evaluation**: Enabled (gpt-4o-mini)
+- **Initial Wealth**: 45-85 (sugar & spice)
+
+**V4 Experiment Conditions**:
+1. `100% Exploiter` - Pure exploiter society with survival pressure
+2. `20% Altruist + 80% Exploiter` - Mixed with exploiter majority
+3. `20% Altruist + 80% Normie (Survivor)` - Mixed with normie majority
+4. `100% Exploiter (No Survival Pressure)` - Ablation: abundant resources
+
+### V5 Experiments (Running)
+- **Ticks**: 200 (extended)
+- **Growback Rate**: 2 (doubled for sustainability)
+- **Initial Wealth**: 45-85
+- All other settings same as V4
+
+**V5 Experiment Conditions**:
+1. `100% Exploiter` - Extended pure exploiter
+2. `20% Altruist + 80% Exploiter` - Extended mixed
+3. `20% Altruist + 80% Normie` - Extended mixed
+
+### Launching Experiments
+
+```bash
+# V5-style experiment with specific identity distribution
+python scripts/run_goal_experiment.py \
+  --single survival \
+  --ticks 200 \
+  --population 100 \
+  --provider openrouter \
+  --model "qwen/qwen3-14b" \
+  --identity-distribution "altruist:20,exploiter:80" \
+  --trust-mechanism-mode hybrid \
+  --initial-wealth-min 45 \
+  --initial-wealth-max 85 \
+  --experiment-suffix "my_experiment_v5" \
+  --results-root results/sugarscape/formal
+```
+
+---
+
+## Key Metrics We Care About
+
+### 1. Moral Evolution Metrics
+| Metric | Source | Description |
+|--------|--------|-------------|
+| `external_overall` | `moral_scores.csv` | LLM judge's overall moral score (0-100) |
+| `moral_curve` | Time series | Mean moral score over time by identity |
+| `moral_distribution` | Histogram | Distribution shift from low→medium→high |
+
+### 2. Trade & Cooperation Metrics
+| Metric | Source | Description |
+|--------|--------|-------------|
+| `trade_success_rate` | `trade_dialogues.jsonl` | % of encounters that complete trade |
+| `trade_welfare_change` | `trade_dialogues.jsonl` | Net welfare created/destroyed per trade |
+| `mutual_benefit_rate` | Calculated | % of trades where both parties gain |
+| `zero_sum_rate` | Calculated | % of trades where one gains, one loses |
+
+### 3. Survival & Population Metrics
+| Metric | Source | Description |
+|--------|--------|-------------|
+| `survival_rate` | `metrics.csv` | % of agents alive at tick T |
+| `mean_lifespan` | `death_records.csv` | Average ticks survived |
+| `cause_of_death` | `death_records.csv` | Sugar/spice starvation breakdown |
+
+### 4. Belief Evolution Metrics
+| Metric | Source | Description |
+|--------|--------|-------------|
+| `worldview_summary` | `reflections.jsonl` | Agent's expressed worldview |
+| `norms_summary` | `reflections.jsonl` | Agent's social norms |
+| `keyword_frequency` | Text analysis | % mentions of "mutual", "fair", "self-interest", etc. |
+| `identity_shift` | `reflections.jsonl` | Change in `self_identity_leaning` |
+
+### 5. Social Welfare Metrics
+| Metric | Source | Description |
+|--------|--------|-------------|
+| `total_welfare` | `metrics.csv` | Sum of all agent welfare (Cobb-Douglas) |
+| `gini_coefficient` | `metrics.csv` | Wealth inequality measure |
+| `mean_wealth` | `metrics.csv` | Average sugar + spice |
+
+### 6. Identity-Specific Analysis
+| Metric | Description |
+|--------|-------------|
+| `exploiter_moral_change` | Moral score delta for exploiters only |
+| `normie_moral_change` | Moral score delta for normies only |
+| `altruist_survival_rate` | Do altruists die faster? |
+| `cross_identity_trade_rate` | Trading patterns between identities |
+
+### Key Research Questions
+
+1. **Does pure exploiter society develop moral norms?**
+   - Track: `keyword_frequency` for "mutual", "cooperation" in exploiter worldviews
+   - Result: No - they use moral language instrumentally ("fairness only if it benefits ME")
+
+2. **Do exploiters learn from altruists?**
+   - Track: `exploiter_moral_change` in mixed vs pure experiments
+   - Result: Minimal change (+6 pts) vs normies (+41 pts)
+
+3. **Is moral development identity-driven or environment-driven?**
+   - Compare: Same environment, different identities
+   - Result: Identity-driven - normies adapt instantly, exploiters resist
+
+4. **Does trade create or destroy welfare?**
+   - Track: `trade_welfare_change`, `mutual_benefit_rate`
+   - Result: Depends on resource pressure - destroys under scarcity
+
+### Analysis Output Location
+
+```
+results/sugarscape/formal/_analysis/
+├── v4_moral_evolution.png          # Moral curves comparison
+├── v4_moral_distribution_over_time.png  # Distribution histograms
+├── {timestamp}/
+│   ├── formal_compare.png          # Multi-panel experiment comparison
+│   ├── hell_vs_heaven_igi.png      # IGI survival analysis
+│   └── figures/                    # Per-experiment detailed plots
+```

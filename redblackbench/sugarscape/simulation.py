@@ -183,20 +183,19 @@ class SugarSimulation:
     def _create_agent(self):
         """Create and place a new agent with random attributes."""
         # Random attributes
-        w0 = self.rng.randint(*self.config.initial_wealth_range)
         v = self.rng.randint(*self.config.vision_range)
         max_age = self.rng.randint(*self.config.max_age_range)
 
         # Metabolism attributes - with optional resource specialization
         spice = 0
         m_spice = 0
+        w0 = self.rng.randint(*self.config.initial_wealth_range)  # default
         
         if self.config.enable_spice and getattr(self.config, 'enable_resource_specialization', False):
             # Resource Specialization Mode:
             # 50% Sugar specialists (high sugar metabolism, low spice metabolism)
             # 50% Spice specialists (high spice metabolism, low sugar metabolism)
             # This creates complementary demand for meaningful trade!
-            spice = self.rng.randint(*self.config.initial_spice_range)
             
             specialization_ratio = getattr(self.config, 'specialization_ratio', 0.5)
             high_range = getattr(self.config, 'specialization_high_metabolism', (3, 4))
@@ -212,6 +211,31 @@ class SugarSimulation:
                 # → Will seek to trade Sugar for Spice
                 m = self.rng.randint(*low_range)
                 m_spice = self.rng.randint(*high_range)
+            
+            # FIX: Match initial resources to metabolism!
+            # Agents should start with MORE of the resource they consume MORE of.
+            # This ensures equal "runway" (ticks until starvation) for both resources.
+            # runway = initial_resource / metabolism
+            # To equalize: initial_sugar/m = initial_spice/m_spice
+            # So: initial_sugar/initial_spice = m/m_spice
+            
+            # Calculate total initial resources (sum of both)
+            wealth_range = self.config.initial_wealth_range
+            spice_range = self.config.initial_spice_range
+            total_min = wealth_range[0] + spice_range[0]
+            total_max = wealth_range[1] + spice_range[1]
+            total_initial = self.rng.randint(total_min, total_max)
+            
+            # Split based on metabolism ratio
+            total_metabolism = m + m_spice
+            sugar_ratio = m / total_metabolism
+            
+            w0 = int(total_initial * sugar_ratio)
+            spice = total_initial - w0
+            
+            # Ensure minimum resources
+            w0 = max(w0, wealth_range[0])
+            spice = max(spice, spice_range[0])
         else:
             # Original independent random metabolism (no specialization)
             m = self.rng.randint(*self.config.metabolism_range)
