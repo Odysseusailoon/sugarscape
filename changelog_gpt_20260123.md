@@ -1,5 +1,23 @@
 # Changelog - GPT - 2026-01-23
 
+## Documentation: Updated CLAUDE.md to be Sugarscape-focused
+
+**Purpose**: Consolidate documentation to reflect the current sugarscape-focused nature of the repository, incorporating all recent changes from both changelogs.
+
+**Changes**:
+- Added overview section explaining the repository purpose
+- Documented core systems: checkpoint, identity/belief evolution, trading, resource specialization, external moral evaluator, real-time trade eval
+- Added event-triggered identity review system documentation
+- Added encounter protocol modes (`full`/`chat_only`/`protocol_only`)
+- Added resource specialization documentation for meaningful trade
+- Added last words feature documentation
+- Updated configuration examples with new flags (50+ parameters)
+- Added analysis scripts section
+- Referenced `EXPERIMENTS.md` for full experiment documentation
+- Cleaned up outdated references to generic "Games" and RedBlack bench
+
+---
+
 ## Feature: Resource Specialization for Meaningful Trade
 
 **Problem**: With independent random metabolism (both 1-4), 67% of agents end up "balanced" (difference < 2), meaning they have similar demand for both resources. This makes trade pointless - Cobb-Douglas utility is maximized at balance, so trading away from balance hurts welfare.
